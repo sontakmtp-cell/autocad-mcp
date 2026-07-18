@@ -1,0 +1,9 @@
+{
+  "cases": [
+    {"name": "no_attributes", "attributes": {}},
+    {"name": "one_attribute", "attributes": {"TAG": "P-101"}},
+    {"name": "multiple_attributes", "attributes": {"TAG": "P-101", "SERVICE": "Cooling water"}},
+    {"name": "spaces_and_unicode", "attributes": {"MÔ_TẢ": "Máy bơm số 1"}},
+    {"name": "missing_tag", "attributes": {"DOES_NOT_EXIST": "value"}, "expected_error": "attribute_tag_not_found"}
+  ]
+}

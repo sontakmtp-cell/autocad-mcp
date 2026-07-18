@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import functools
+import inspect
 import json
 import time
 import uuid
@@ -56,11 +57,17 @@ async def get_backend() -> AutoCADBackend:
             return _backend
 
         backend_name = detect_backend()
+        transport_config = _current_transport_config()
 
         if backend_name == "file_ipc":
-            from autocad_mcp.backends.file_ipc import FileIPCBackend
+            from autocad_mcp.backends.safe_file_ipc import SafeFileIPCBackend
 
-            backend = FileIPCBackend()
+            backend = SafeFileIPCBackend(
+                allow_execute_lisp=not (
+                    transport_config.transport == "streamable-http"
+                    and transport_config.remote_profile != "off"
+                )
+            )
         else:
             from autocad_mcp.backends.ezdxf_backend import EzdxfBackend
 
@@ -108,6 +115,13 @@ def _result_outcome(result: Any) -> str:
     return "ok"
 
 
+def _bound_tool_arguments(fn, args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[str, Any]:
+    """Read policy inputs from positional or keyword tool arguments."""
+
+    bound = inspect.signature(fn).bind_partial(*args, **kwargs)
+    return str(bound.arguments.get("operation", "unknown")), bound.arguments.get("data")
+
+
 def _audit(
     *,
     request_id: str,
@@ -141,22 +155,46 @@ def _audit(
 
 
 def _error(e: Exception, context: str = "") -> str:
-    """Format an exception with an actionable hint."""
+    """Format exceptions without guessing that every timeout means LISP is absent."""
     msg = str(e)
     msg_lower = msg.lower()
 
     if "window not found" in msg_lower or "no autocad" in msg_lower:
-        hint = "AutoCAD LT is not running or no drawing is open. Start AutoCAD and open a .dwg file."
+        code = "autocad_not_running"
+        hint = "Start AutoCAD LT and open a drawing."
+    elif "dispatcher_missing_in_active_document" in msg_lower:
+        code = "dispatcher_missing_in_active_document"
+        hint = "Configure acadltdoc.lsp to load mcp_dispatch.lsp for every document; do not use APPLOAD as recovery."
+    elif "no active document" in msg_lower or "active document" in msg_lower:
+        code = "no_active_document"
+        hint = "Open or activate a drawing in AutoCAD LT."
+    elif "modal" in msg_lower or "dialog" in msg_lower:
+        code = "modal_dialog_active"
+        hint = "Close the existing AutoCAD dialog, then retry. MCP will not open APPLOAD or change focus."
+    elif "busy" in msg_lower or "command active" in msg_lower:
+        code = "autocad_busy"
+        hint = "Finish or cancel the command you started in AutoCAD, then retry. MCP does not send ESC."
     elif "timeout" in msg_lower:
-        hint = "Command timed out. AutoCAD may be in a modal dialog. Press ESC in AutoCAD and retry."
+        code = "dispatcher_timeout"
+        hint = "The dispatcher did not answer in time. Check AutoCAD busy/dialog state and system.health; timeout alone does not prove LISP is missing."
+    elif "routing" in msg_lower or "com" in msg_lower or "activex" in msg_lower:
+        code = "command_routing_failed"
+        hint = "Run the MCP server with native Windows Python and verify AutoCAD ActiveX/COM is available."
     elif "not supported" in msg_lower or "backend" in msg_lower:
-        hint = "Operation not supported on current backend. Check system(operation='status') for capabilities."
-    elif "dispatcher" in msg_lower or "mcp_dispatch" in msg_lower:
-        hint = "mcp_dispatch.lsp not loaded. In AutoCAD command line, type: (load \"mcp_dispatch.lsp\")"
+        code = "unsupported_operation"
+        hint = "Operation not supported on the current backend. Check system(operation='status')."
     else:
-        hint = "Unexpected error. Check AutoCAD is responsive and retry."
+        code = "unexpected_error"
+        hint = "Check system(operation='health') for the precise AutoCAD/dispatcher state."
 
-    return _json({"error": f"[{context}] {msg}" if context else msg, "hint": hint})
+    return _json(
+        {
+            "ok": False,
+            "error_code": code,
+            "error": f"[{context}] {msg}" if context else msg,
+            "hint": hint,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +210,7 @@ def _safe(tool_name: str):
         async def wrapper(*args, **kwargs):
             request_id = uuid.uuid4().hex[:12]
             started_at = time.perf_counter()
-            operation = str(kwargs.get("operation", "unknown"))
+            operation, data = _bound_tool_arguments(fn, args, kwargs)
             config: TransportConfig | None = None
             try:
                 config = _current_transport_config()
@@ -180,7 +218,7 @@ def _safe(tool_name: str):
                 decision = evaluate_operation(
                     tool=tool_name,
                     operation=operation,
-                    data=kwargs.get("data"),
+                    data=data,
                     config=config,
                     scopes=(access_token.scopes if access_token else None),
                 )
@@ -199,18 +237,20 @@ def _safe(tool_name: str):
                             "ok": False,
                             "error": f"Remote policy denied {tool_name}.{operation}: "
                             f"{decision.reason}",
+                            "code": decision.code,
                             "request_id": request_id,
                         }
                     )
 
                 result = await fn(*args, **kwargs)
+                outcome = _result_outcome(result)
                 _audit(
                     request_id=request_id,
                     config=config,
                     tool=tool_name,
                     operation=operation,
                     decision="allow",
-                    outcome=_result_outcome(result),
+                    outcome=outcome,
                     started_at=started_at,
                 )
                 return result
@@ -225,9 +265,8 @@ def _safe(tool_name: str):
                         outcome="error",
                         started_at=started_at,
                     )
-                op = kwargs.get("operation", "unknown")
-                log.error("tool_error", tool=tool_name, operation=op, error=str(e))
-                return _error(e, f"{tool_name}.{op}")
+                log.error("tool_error", tool=tool_name, operation=operation, error=str(e))
+                return _error(e, f"{tool_name}.{operation}")
 
         return wrapper
 

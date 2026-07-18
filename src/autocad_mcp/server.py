@@ -497,10 +497,25 @@ async def system(
     elif operation == "health":
         try:
             backend = await get_backend()
-            result = await backend.status()
-            return _json({"ok": result.ok, "backend": backend.name})
+            result = await backend.health()
+            if result.ok:
+                payload = result.payload if isinstance(result.payload, dict) else {}
+                return _json({"ok": True, **payload})
+            return _json(result.to_dict())
         except Exception as e:
-            return _json({"ok": False, "error": str(e)})
+            message = str(e)
+            lowered = message.lower()
+            if "window not found" in lowered or "no autocad" in lowered:
+                error_code = "autocad_not_running"
+            elif "active document" in lowered:
+                error_code = "no_active_document"
+            elif "modal" in lowered or "dialog" in lowered:
+                error_code = "modal_dialog_active"
+            elif "busy" in lowered or "command active" in lowered:
+                error_code = "autocad_busy"
+            else:
+                error_code = "command_routing_failed"
+            return _json({"ok": False, "error_code": error_code, "error": message})
     elif operation == "runtime":
         import os
         import sys

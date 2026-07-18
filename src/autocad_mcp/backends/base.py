@@ -14,13 +14,19 @@ class CommandResult:
     ok: bool
     payload: Any = None
     error: str | None = None
+    error_code: str | None = None
+    details: dict[str, Any] | None = None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"ok": self.ok}
         if self.ok:
             d["payload"] = self.payload
         else:
             d["error"] = self.error
+            if self.error_code:
+                d["error_code"] = self.error_code
+            if self.details:
+                d["details"] = self.details
         return d
 
 
@@ -59,7 +65,21 @@ class AutoCADBackend(ABC):
 
     @abstractmethod
     async def status(self) -> CommandResult:
-        """Return backend health/status info."""
+        """Return cached/backend status info."""
+
+    async def health(self) -> CommandResult:
+        """Perform a side-effect-free health check.
+
+        Backends without a live runtime probe retain their existing status
+        behavior. File IPC overrides this method with a real dispatcher ping.
+        """
+        status = await self.status()
+        if not status.ok:
+            return status
+        return CommandResult(
+            ok=True,
+            payload={"backend": self.name, "status": status.payload},
+        )
 
     # --- Drawing management ---
 

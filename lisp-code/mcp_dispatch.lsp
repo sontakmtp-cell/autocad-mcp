@@ -2,7 +2,7 @@
 ;;;
 ;;; Protocol:
 ;;;   1. Python writes command JSON to C:/temp/autocad_mcp_cmd_{id}.json
-;;;   2. Python types "(c:mcp-dispatch)" + Enter
+;;;   2. Python posts one exact request through ActiveX/COM
 ;;;   3. This function reads cmd, dispatches via command map, writes result JSON
 ;;;   4. Python polls for C:/temp/autocad_mcp_result_{id}.json
 ;;;
@@ -167,7 +167,7 @@
 ;; Command dispatcher — WHITELIST ONLY, no eval
 ;; -----------------------------------------------------------------------
 
-(defun mcp-dispatch-command (cmd-name params-json / result)
+(defun mcp-dispatch-command-v31 (cmd-name params-json / result)
   "Dispatch a command by name. Returns (ok . payload-or-error)."
   (cond
     ;; --- Ping ---
@@ -302,19 +302,21 @@
      (progn
        (setq path (mcp-json-get-string params-json "path"))
        (if (and path (> (strlen path) 0))
-         (progn
-           (setvar "FILEDIA" 0)
-           (command "_.SAVEAS" "" path)
-           (setvar "FILEDIA" 1)
-           (cons T (strcat "\"saved to: " (mcp-escape-string path) "\"")))
+         (mcp-call-with-sysvars
+           '(("FILEDIA" 0) ("CMDECHO" 0))
+           'mcp-saveas-raw
+           (list path))
          (progn (command "_.QSAVE") (cons T "\"saved\"")))))
 
     ((= cmd-name "drawing-save-as-dxf")
      (progn
        (setq path (mcp-json-get-string params-json "path"))
        (if path
-         (progn (command "_.SAVEAS" "DXF" path) (cons T (strcat "\"" path "\"")))
-         (cons nil "Save path required"))))
+         (mcp-call-with-sysvars
+           '(("FILEDIA" 0) ("CMDECHO" 0))
+           'mcp-save-dxf-raw
+           (list path))
+         (mcp-error "path_required" "Save path required"))))
 
     ((= cmd-name "drawing-purge")
      (command "_.-PURGE" "_ALL" "*" "_N")
@@ -324,12 +326,11 @@
      (progn
        (setq path (mcp-json-get-string params-json "path"))
        (if path
-         (progn
-           (setvar "FILEDIA" 0)
-           (command "_.OPEN" path)
-           (setvar "FILEDIA" 1)
-           (cons T (strcat "\"opened: " (mcp-escape-string path) "\"")))
-         (cons nil "Path required"))))
+         (mcp-call-with-sysvars
+           '(("FILEDIA" 0) ("CMDECHO" 0))
+           'mcp-open-raw
+           (list path))
+         (mcp-error "path_required" "Open path required"))))
 
     ;; --- P&ID ---
     ((= cmd-name "pid-setup-layers")
@@ -618,23 +619,16 @@
 
 ;; --- Freehand LISP execution ---
 
-(defun mcp-cmd-execute-lisp (params / code-file result old-secureload)
+(defun mcp-cmd-execute-lisp (params / code-file)
   (setq code-file (mcp-json-get-string params "code_file"))
   (if (not code-file)
     (cons nil "code_file parameter required")
     (if (not (findfile code-file))
       (cons nil (strcat "Code file not found: " code-file))
-      (progn
-        ;; Suppress SECURELOAD dialog for MCP temp files
-        (setq old-secureload (getvar "SECURELOAD"))
-        (setvar "SECURELOAD" 0)
-        (setq result (vl-catch-all-apply 'load (list code-file)))
-        (setvar "SECURELOAD" old-secureload)
-        (if (vl-catch-all-error-p result)
-          (cons nil (strcat "LISP error: " (vl-catch-all-error-message result)))
-          (cons T (strcat "\"" (mcp-escape-string (vl-princ-to-string result)) "\""))
-        )
-      )
+      (mcp-call-with-sysvars
+        '(("SECURELOAD" 0))
+        'mcp-load-code-file-raw
+        (list code-file))
     )
   )
 )
@@ -1375,4 +1369,521 @@
 (princ "\nIPC directory: ")
 (princ *mcp-ipc-dir*)
 (princ "\nReady for commands via (c:mcp-dispatch)")
+(princ)
+
+;;; -----------------------------------------------------------------------
+;;; MCP Dispatch reliability overrides (v3.2)
+;;; -----------------------------------------------------------------------
+
+(setq *mcp-dispatch-version* "3.2")
+
+(defun mcp-error (code message)
+  (cons nil (strcat "MCPERR:" code ":" message))
+)
+
+(defun mcp-error-code (message / pos rest code-end)
+  (if (and message (= (substr message 1 7) "MCPERR:"))
+    (progn
+      (setq rest (substr message 8))
+      (setq code-end (vl-string-search ":" rest))
+      (if code-end (substr rest 1 code-end) "command_failed")
+    )
+    "command_failed"
+  )
+)
+
+(defun mcp-error-message (message / rest code-end)
+  (if (and message (= (substr message 1 7) "MCPERR:"))
+    (progn
+      (setq rest (substr message 8))
+      (setq code-end (vl-string-search ":" rest))
+      (if code-end (substr rest (+ code-end 2)) message)
+    )
+    message
+  )
+)
+
+(defun mcp-write-result-v32
+  (filepath request-id session-id ok-flag payload error-code error-msg / fp tmp-path)
+  "Write one atomic result containing request and session identifiers."
+  (setq tmp-path (strcat filepath ".tmp"))
+  (if (findfile tmp-path) (vl-file-delete tmp-path))
+  (setq fp (open tmp-path "w"))
+  (if fp
+    (progn
+      (write-line "{" fp)
+      (write-line (strcat "  \"request_id\": \"" (mcp-escape-string request-id) "\",") fp)
+      (write-line (strcat "  \"session_id\": \"" (mcp-escape-string session-id) "\",") fp)
+      (if ok-flag
+        (progn
+          (write-line "  \"ok\": true," fp)
+          (write-line (strcat "  \"payload\": " payload) fp)
+        )
+        (progn
+          (write-line "  \"ok\": false," fp)
+          (write-line (strcat "  \"error_code\": \"" (mcp-escape-string error-code) "\",") fp)
+          (write-line (strcat "  \"error\": \"" (mcp-escape-string error-msg) "\"") fp)
+        )
+      )
+      (write-line "}" fp)
+      (close fp)
+      (if (findfile filepath) (vl-file-delete filepath))
+      (vl-file-rename tmp-path filepath)
+    )
+    (princ (strcat "\nMCP: Cannot open result file: " tmp-path))
+  )
+)
+
+(defun mcp-save-sysvars (bindings / saved pair)
+  (setq saved '())
+  (foreach pair bindings
+    (setq saved (cons (cons (car pair) (getvar (car pair))) saved))
+  )
+  saved
+)
+
+(defun mcp-restore-sysvars (saved / pair)
+  (foreach pair saved
+    (vl-catch-all-apply 'setvar (list (car pair) (cdr pair)))
+  )
+)
+
+(defun mcp-call-with-sysvars (bindings fn args / saved pair result)
+  "Set temporary system variables, call FN, and always restore exact old values."
+  (setq saved (mcp-save-sysvars bindings))
+  (setq result
+    (vl-catch-all-apply
+      '(lambda ()
+         (foreach pair bindings (setvar (car pair) (cadr pair)))
+         (apply fn args)
+       )
+      '()
+    )
+  )
+  (mcp-restore-sysvars saved)
+  (if (vl-catch-all-error-p result)
+    (mcp-error "command_failed" (vl-catch-all-error-message result))
+    result
+  )
+)
+
+(defun mcp-cancel-owned-command (baseline / guard)
+  "Cancel only nested command state created after the dispatcher baseline."
+  (setq guard 0)
+  (while (and (> (getvar "CMDACTIVE") baseline) (< guard 4))
+    (vl-catch-all-apply 'command '())
+    (setq guard (1+ guard))
+  )
+  (= (getvar "CMDACTIVE") baseline)
+)
+
+(defun mcp-read-length (text pos / colon value)
+  (setq colon (vl-string-search ":" text (1- pos)))
+  (if colon
+    (list (atoi (substr text pos (- (1+ colon) pos))) (+ colon 2))
+    nil
+  )
+)
+
+(defun mcp-parse-attributes (text / pos total tag-info tag-len tag value-info value-len value result)
+  "Decode Python's repeated <tag_len>:<tag><value_len>:<value> format."
+  (setq result '() pos 1 total (strlen (if text text "")))
+  (while (<= pos total)
+    (setq tag-info (mcp-read-length text pos))
+    (if (not tag-info)
+      (setq pos (1+ total))
+      (progn
+        (setq tag-len (car tag-info) pos (cadr tag-info))
+        (setq tag (substr text pos tag-len) pos (+ pos tag-len))
+        (setq value-info (mcp-read-length text pos))
+        (if (not value-info)
+          (setq pos (1+ total))
+          (progn
+            (setq value-len (car value-info) pos (cadr value-info))
+            (setq value (substr text pos value-len) pos (+ pos value-len))
+            (setq result (append result (list (cons tag value))))
+          )
+        )
+      )
+    )
+  )
+  result
+)
+
+(defun set_attribute_value (ent tag value / sub-ent ent-data found)
+  "Set an attribute and return T only when the requested tag exists."
+  (setq found nil sub-ent (entnext ent))
+  (while sub-ent
+    (setq ent-data (entget sub-ent))
+    (cond
+      ((= (cdr (assoc 0 ent-data)) "SEQEND") (setq sub-ent nil))
+      ((and (= (cdr (assoc 0 ent-data)) "ATTRIB")
+            (= (strcase (cdr (assoc 2 ent-data))) (strcase tag)))
+       (entmod (subst (cons 1 value) (assoc 1 ent-data) ent-data))
+       (entupd sub-ent)
+       (setq found T sub-ent nil))
+      (t (setq sub-ent (entnext sub-ent)))
+    )
+  )
+  (if found (entupd ent))
+  found
+)
+
+(defun mcp-apply-attributes (ent attributes / pair missing)
+  (setq missing '())
+  (foreach pair attributes
+    (if (not (set_attribute_value ent (car pair) (cdr pair)))
+      (setq missing (append missing (list (car pair))))
+    )
+  )
+  missing
+)
+
+(defun mcp-insert-block-raw (name point scale rotation / before ent)
+  (setq before (entlast))
+  (command "_.-INSERT" name point scale scale rotation)
+  (setq ent (entlast))
+  (if (or (not ent) (= ent before) (/= (cdr (assoc 0 (entget ent))) "INSERT"))
+    (mcp-error "block_insert_failed" "AutoCAD did not create a block reference")
+    (cons T ent)
+  )
+)
+
+(defun mcp-insert-block-safe (name point scale rotation attributes / inserted ent missing)
+  (if (not (tblsearch "BLOCK" name))
+    (mcp-error "block_not_found" (strcat "Block '" name "' not found"))
+    (progn
+      (setq inserted
+        (mcp-call-with-sysvars
+          '(("ATTREQ" 0) ("ATTDIA" 0) ("CMDECHO" 0))
+          'mcp-insert-block-raw
+          (list name point scale rotation)
+        )
+      )
+      (if (not (car inserted))
+        inserted
+        (progn
+          (setq ent (cdr inserted))
+          (setq missing (mcp-apply-attributes ent attributes))
+          (if missing
+            (progn
+              (entdel ent)
+              (mcp-error
+                "attribute_tag_not_found"
+                (strcat "Attribute tag not found: " (car missing))
+              )
+            )
+            (cons T ent)
+          )
+        )
+      )
+    )
+  )
+)
+
+(defun mcp-cmd-block-insert (params / name x y scale rotation block-id attrs inserted ent)
+  (setq name (mcp-json-get-string params "name")
+        x (mcp-json-get-number params "x")
+        y (mcp-json-get-number params "y")
+        scale (mcp-json-get-number params "scale")
+        rotation (mcp-json-get-number params "rotation")
+        block-id (mcp-json-get-string params "block_id"))
+  (if (not scale) (setq scale 1.0))
+  (if (not rotation) (setq rotation 0.0))
+  (setq attrs (if (and block-id (> (strlen block-id) 0)) (list (cons "ID" block-id)) '()))
+  (setq inserted (mcp-insert-block-safe name (list x y 0.0) scale rotation attrs))
+  (if (car inserted)
+    (progn
+      (setq ent (cdr inserted))
+      (cons T (strcat "{\"entity_type\":\"INSERT\",\"handle\":\""
+                      (cdr (assoc 5 (entget ent))) "\"}")))
+    inserted
+  )
+)
+
+(defun mcp-cmd-block-insert-with-attribs (params / name x y scale rotation attrs-str attrs inserted ent)
+  (setq name (mcp-json-get-string params "name")
+        x (mcp-json-get-number params "x")
+        y (mcp-json-get-number params "y")
+        scale (mcp-json-get-number params "scale")
+        rotation (mcp-json-get-number params "rotation")
+        attrs-str (mcp-json-get-string params "attributes_str"))
+  (if (not scale) (setq scale 1.0))
+  (if (not rotation) (setq rotation 0.0))
+  (setq attrs (mcp-parse-attributes attrs-str))
+  (setq inserted (mcp-insert-block-safe name (list x y 0.0) scale rotation attrs))
+  (if (car inserted)
+    (progn
+      (setq ent (cdr inserted))
+      (cons T (strcat "{\"entity_type\":\"INSERT\",\"handle\":\""
+                      (cdr (assoc 5 (entget ent))) "\"}")))
+    inserted
+  )
+)
+
+(defun mcp-call-pid-block-helper (fn args attributes / before result ent missing)
+  "Run an external P&ID insertion helper without dialogs or attribute prompts."
+  (setq before (entlast))
+  (setq result
+    (mcp-call-with-sysvars
+      '(("ATTREQ" 0) ("ATTDIA" 0) ("CMDECHO" 0))
+      fn
+      args
+    )
+  )
+  (if (and (consp result) (not (car result)) (stringp (cdr result))
+           (= (substr (cdr result) 1 7) "MCPERR:"))
+    result
+    (progn
+      (setq ent (entlast))
+      (if (or (not ent) (= ent before))
+        (mcp-error "block_insert_failed" "P&ID helper did not create an entity")
+        (progn
+          (setq missing (mcp-apply-attributes ent attributes))
+          (if missing
+            (progn
+              (entdel ent)
+              (mcp-error "attribute_tag_not_found"
+                (strcat "Attribute tag not found: " (car missing))))
+            (cons T ent)
+          )
+        )
+      )
+    )
+  )
+)
+
+(defun mcp-cmd-pid-insert-symbol (params / category symbol x y scale rotation inserted ent)
+  (setq category (mcp-json-get-string params "category")
+        symbol (mcp-json-get-string params "symbol")
+        x (mcp-json-get-number params "x")
+        y (mcp-json-get-number params "y")
+        scale (mcp-json-get-number params "scale")
+        rotation (mcp-json-get-number params "rotation"))
+  (if (not scale) (setq scale 1.0))
+  (if (not rotation) (setq rotation 0.0))
+  (if (not c:insert-pid-block)
+    (mcp-error "pid_tools_missing" "pid_tools.lsp not loaded")
+    (progn
+      (setq inserted
+        (mcp-call-pid-block-helper 'c:insert-pid-block
+          (list category symbol x y scale rotation) '()))
+      (if (car inserted)
+        (progn
+          (setq ent (cdr inserted))
+          (cons T (strcat "{\"symbol\":\"" (mcp-escape-string symbol)
+                          "\",\"handle\":\"" (cdr (assoc 5 (entget ent))) "\"}")))
+        inserted
+      )
+    )
+  )
+)
+
+(defun mcp-cmd-pid-insert-valve (params / x y valve-type rotation attrs inserted ent)
+  (setq x (mcp-json-get-number params "x")
+        y (mcp-json-get-number params "y")
+        valve-type (mcp-json-get-string params "valve_type")
+        rotation (mcp-json-get-number params "rotation")
+        attrs (mcp-parse-attributes (mcp-json-get-string params "attributes_str")))
+  (if (not rotation) (setq rotation 0.0))
+  (if (not c:insert-valve-on-line)
+    (mcp-error "pid_tools_missing" "pid_tools.lsp not loaded")
+    (progn
+      (setq inserted
+        (mcp-call-pid-block-helper 'c:insert-valve-on-line
+          (list x y valve-type rotation) attrs))
+      (if (car inserted)
+        (progn
+          (setq ent (cdr inserted))
+          (cons T (strcat "{\"valve\":\"" (mcp-escape-string valve-type)
+                          "\",\"handle\":\"" (cdr (assoc 5 (entget ent))) "\"}")))
+        inserted
+      )
+    )
+  )
+)
+
+(defun mcp-cmd-pid-insert-pump (params / x y pump-type rotation attrs inserted ent)
+  (setq x (mcp-json-get-number params "x")
+        y (mcp-json-get-number params "y")
+        pump-type (mcp-json-get-string params "pump_type")
+        rotation (mcp-json-get-number params "rotation")
+        attrs (mcp-parse-attributes (mcp-json-get-string params "attributes_str")))
+  (if (not rotation) (setq rotation 0.0))
+  (if (not c:insert-pump)
+    (mcp-error "pid_tools_missing" "pid_tools.lsp not loaded")
+    (progn
+      (setq inserted
+        (mcp-call-pid-block-helper 'c:insert-pump
+          (list x y pump-type rotation) attrs))
+      (if (car inserted)
+        (progn
+          (setq ent (cdr inserted))
+          (cons T (strcat "{\"pump\":\"" (mcp-escape-string pump-type)
+                          "\",\"handle\":\"" (cdr (assoc 5 (entget ent))) "\"}")))
+        inserted
+      )
+    )
+  )
+)
+
+(defun mcp-cmd-pid-insert-tank (params / x y tank-type scale attrs inserted ent)
+  (setq x (mcp-json-get-number params "x")
+        y (mcp-json-get-number params "y")
+        tank-type (mcp-json-get-string params "tank_type")
+        scale (mcp-json-get-number params "scale")
+        attrs (mcp-parse-attributes (mcp-json-get-string params "attributes_str")))
+  (if (not scale) (setq scale 1.0))
+  (if (not c:insert-tank)
+    (mcp-error "pid_tools_missing" "pid_tools.lsp not loaded")
+    (progn
+      (setq inserted
+        (mcp-call-pid-block-helper 'c:insert-tank
+          (list x y tank-type scale) attrs))
+      (if (car inserted)
+        (progn
+          (setq ent (cdr inserted))
+          (cons T (strcat "{\"tank\":\"" (mcp-escape-string tank-type)
+                          "\",\"handle\":\"" (cdr (assoc 5 (entget ent))) "\"}")))
+        inserted
+      )
+    )
+  )
+)
+
+(defun mcp-load-code-file-raw (code-file / result)
+  (setq result (vl-catch-all-apply 'load (list code-file)))
+  (if (vl-catch-all-error-p result)
+    (mcp-error "lisp_error" (vl-catch-all-error-message result))
+    (cons T (strcat "\"" (mcp-escape-string (vl-princ-to-string result)) "\""))
+  )
+)
+
+(defun mcp-cmd-execute-lisp (params / code-file)
+  (setq code-file (mcp-json-get-string params "code_file"))
+  (if (not (findfile code-file))
+    (mcp-error "code_file_not_found" "Code file not found")
+    (mcp-call-with-sysvars '(("SECURELOAD" 0)) 'mcp-load-code-file-raw (list code-file))
+  )
+)
+
+(defun mcp-saveas-raw (path)
+  (command "_.SAVEAS" "" path)
+  (cons T (strcat "\"saved to: " (mcp-escape-string path) "\""))
+)
+
+(defun mcp-open-raw (path)
+  (command "_.OPEN" path)
+  (cons T (strcat "\"opened: " (mcp-escape-string path) "\""))
+)
+
+(defun mcp-save-dxf-raw (path)
+  (command "_.SAVEAS" "DXF" path)
+  (cons T (strcat "\"" (mcp-escape-string path) "\""))
+)
+
+(defun mcp-dispatch-command (cmd-name params-json / path)
+  "Reliability wrapper around the original v3.1 command map."
+  (cond
+    ((= cmd-name "drawing-save")
+     (setq path (mcp-json-get-string params-json "path"))
+     (if (and path (> (strlen path) 0))
+       (mcp-call-with-sysvars '(("FILEDIA" 0) ("CMDECHO" 0)) 'mcp-saveas-raw (list path))
+       (mcp-dispatch-command-v31 cmd-name params-json)))
+    ((= cmd-name "drawing-save-as-dxf")
+     (setq path (mcp-json-get-string params-json "path"))
+     (if path
+       (mcp-call-with-sysvars '(("FILEDIA" 0) ("CMDECHO" 0)) 'mcp-save-dxf-raw (list path))
+       (mcp-error "path_required" "Save path required")))
+    ((= cmd-name "drawing-open")
+     (setq path (mcp-json-get-string params-json "path"))
+     (if path
+       (mcp-call-with-sysvars '(("FILEDIA" 0) ("CMDECHO" 0)) 'mcp-open-raw (list path))
+       (mcp-error "path_required" "Open path required")))
+    (t (mcp-dispatch-command-v31 cmd-name params-json))
+  )
+)
+
+(defun mcp-process-request
+  (session-id request-id / cmd-file result-file json-text cmd-name payload-request payload-session result before error-text)
+  (setq cmd-file
+    (strcat *mcp-ipc-dir* "autocad_mcp_cmd_" session-id "_" request-id ".json"))
+  (setq result-file
+    (strcat *mcp-ipc-dir* "autocad_mcp_result_" session-id "_" request-id ".json"))
+  (if (not (findfile cmd-file))
+    (mcp-write-result-v32 result-file request-id session-id nil nil
+      "ipc_command_missing" "The exact IPC command file was not found")
+    (progn
+      (setq json-text (mcp-read-file-lines cmd-file))
+      (setq cmd-name (if json-text (mcp-json-get-string json-text "command") nil))
+      (setq payload-request (if json-text (mcp-json-get-string json-text "request_id") nil))
+      (setq payload-session (if json-text (mcp-json-get-string json-text "session_id") nil))
+      (cond
+        ((not json-text)
+         (mcp-write-result-v32 result-file request-id session-id nil nil
+           "ipc_command_invalid" "Cannot read command file"))
+        ((not cmd-name)
+         (mcp-write-result-v32 result-file request-id session-id nil nil
+           "ipc_command_invalid" "Command name is missing"))
+        ((or (/= payload-request request-id) (/= payload-session session-id))
+         (mcp-write-result-v32 result-file request-id session-id nil nil
+           "ipc_command_invalid" "Command file identifiers do not match its filename"))
+        (t
+         ;; PostCommand starts this dispatcher only when the document is ready.
+         ;; Record the dispatcher command's own CMDACTIVE baseline so cleanup
+         ;; never cancels a command that existed before MCP routing.
+         (setq before (getvar "CMDACTIVE"))
+         (setq result
+           (vl-catch-all-apply 'mcp-dispatch-command (list cmd-name json-text)))
+         (if (vl-catch-all-error-p result)
+           (setq result (mcp-error "command_failed" (vl-catch-all-error-message result))))
+         (if (> (getvar "CMDACTIVE") before)
+           (progn
+             (mcp-cancel-owned-command before)
+             (setq result
+               (mcp-error "command_not_completed"
+                 "MCP command left AutoCAD waiting for input and was cancelled"))))
+         (if (car result)
+           (mcp-write-result-v32 result-file request-id session-id T (cdr result) nil nil)
+           (progn
+             (setq error-text (cdr result))
+             (mcp-write-result-v32 result-file request-id session-id nil nil
+               (mcp-error-code error-text) (mcp-error-message error-text))))
+        )
+      )
+      (vl-file-delete cmd-file)
+    )
+  )
+)
+
+(defun c:mcp-dispatch-request (session-id request-id)
+  "Process one exact request; never scan or select another process's file."
+  (if (and session-id request-id)
+    (mcp-process-request session-id request-id)
+    (princ "\nMCP: session-id and request-id are required"))
+  (princ)
+)
+
+(defun c:mcp-dispatch (/ cmd-files filename parts session-id request-id stem first-sep)
+  "Legacy manual entry point. Sort files and process only the oldest name deterministically."
+  (setq cmd-files
+    (acad_strlsort (vl-directory-files *mcp-ipc-dir* "autocad_mcp_cmd_*.json" 1)))
+  (if (not cmd-files)
+    (princ "\nMCP: No pending commands")
+    (progn
+      (setq filename (car cmd-files))
+      (setq stem (substr filename 17 (- (strlen filename) 21)))
+      (setq first-sep (vl-string-search "_" stem))
+      (if first-sep
+        (progn
+          (setq session-id (substr stem 1 first-sep))
+          (setq request-id (substr stem (+ first-sep 2)))
+          (mcp-process-request session-id request-id))
+        (princ "\nMCP: Legacy command filename is invalid"))
+    )
+  )
+  (princ)
+)
+
+(princ "\n=== MCP Dispatch v3.2 reliability overrides loaded ===")
 (princ)

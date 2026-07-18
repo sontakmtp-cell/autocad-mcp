@@ -3,7 +3,7 @@
 ;;; Compatible with AutoCAD LT 2024+
 
 ;; Insert block without attributes (simpler approach for P&ID symbols)
-(defun c:insert-block-simple (block-path x y scale rotation / block-name slash-pos dot-pos old-attreq)
+(defun c:insert-block-simple (block-path x y scale rotation / block-name slash-pos dot-pos old-attreq insert-result)
   "Insert a block without attribute prompting"
   ;; Extract block name from path without using VL functions (for LT compatibility)
   ;; Find last slash
@@ -38,15 +38,21 @@
   
   ;; Insert block WITHOUT attribute prompting
   (setq old-attreq (getvar "ATTREQ"))
-  (setvar "ATTREQ" 0)  ; Disable attribute prompts - use defaults
-  
-  ;; Insert the block
-  (command "_.-INSERT" block-name (list x y 0.0) scale scale rotation)
-  
-  ;; Restore ATTREQ
-  (setvar "ATTREQ" old-attreq)
-  
-  (princ (strcat "\nInserted " block-name))
+  (setq insert-result
+    (vl-catch-all-apply
+      '(lambda ()
+         (setvar "ATTREQ" 0)
+         (command "_.-INSERT" block-name (list x y 0.0) scale scale rotation)
+       )
+      '()
+    )
+  )
+  ;; Restore the exact previous value even when INSERT fails.
+  (vl-catch-all-apply 'setvar (list "ATTREQ" old-attreq))
+  (if (vl-catch-all-error-p insert-result)
+    (princ (strcat "\nBlock insert failed: " (vl-catch-all-error-message insert-result)))
+    (princ (strcat "\nInserted " block-name))
+  )
 )
 
 ;; Update block attributes using entity modification (proper method for AutoCAD LT)

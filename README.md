@@ -20,7 +20,7 @@ Một **MCP client** (Claude Desktop, Claude Code, v.v.) có thể kết nối v
 Yêu cầu:
 
 - **Windows 10/11**  
-  (Backend File IPC dùng Win32 API để gửi message tới cửa sổ mà không cần focus)
+  (Backend File IPC dùng AutoCAD ActiveX/COM mà không cần focus cửa sổ)
 
 - **AutoCAD LT 2024 trở lên**  
   AutoLISP được hỗ trợ từ LT 2024 trên Windows.  
@@ -60,37 +60,26 @@ uv sync
 
 ---
 
-# 2. Load LISP dispatcher trong AutoCAD LT
+# 2. Auto-load LISP dispatcher for every document
 
-Mở AutoCAD LT và load file:
+AutoLISP state belongs to each AutoCAD document. Loading `mcp_dispatch.lsp` in
+one DWG does not guarantee it exists after opening or creating another DWG.
+Configure document startup once instead of using APPLOAD as recovery:
 
-`mcp_dispatch.lsp`
+1. Add `<repo>/lisp-code` to **Support File Search Path**.
+2. Add the same directory to `TRUSTEDPATHS`. Do not disable `SECURELOAD`.
+3. Copy `lisp-code/acadltdoc.lsp.example` to `acadltdoc.lsp` in a Support File
+   Search Path.
+4. Restart AutoCAD LT and open a drawing. Each document should print:
 
-bằng lệnh **APPLOAD**
-
-Các bước:
-
-1. Gõ `APPLOAD` trong command line
-2. Chọn file
-
-```
-<repo>/lisp-code/mcp_dispatch.lsp
-```
-
-3. Nhấn **Load**
-
-Nếu thành công sẽ thấy:
-
-```
-=== MCP Dispatch v3.1 loaded ===
-Ready for commands via (c:mcp-dispatch)
+```text
+=== MCP Dispatch v3.2 reliability overrides loaded ===
 ```
 
----
-
-💡 Mẹo
-
-Thêm file này vào **Startup Suite** trong APPLOAD để AutoCAD tự load khi mở bản vẽ.
+The example uses `(findfile "mcp_dispatch.lsp")` followed by `(load ...)`, so it
+contains no machine-specific path. Startup Suite and repeated APPLOAD are not
+needed. If startup is missing in a newly active document, MCP reports
+`dispatcher_missing_in_active_document`; it never opens APPLOAD automatically.
 
 ---
 
@@ -373,16 +362,19 @@ Python MCP Server (autocad_mcp)
            in-memory DXF
 ```
 
-File IPC gửi **keystrokes** tới AutoCAD bằng:
+File IPC routes a fixed, whitelisted dispatcher expression through AutoCAD's
+ActiveX/COM document API. The primary route is `Document.PostCommand`, which
+queues execution for an idle document. `Document.SendCommand` is an explicit
+API fallback when `PostCommand` is unavailable; there is no silent keyboard,
+clipboard, focus, or Win32 `WM_CHAR` fallback.
 
-```
-PostMessageW(WM_CHAR)
-```
+Before routing, the backend checks `GetAcadState().IsQuiescent` and
+`CMDACTIVE`. A pre-existing user command returns `autocad_busy`; MCP sends no
+ESC. IPC request files include both a process/session ID and request ID, and the
+LISP entry point opens that exact file instead of selecting an arbitrary pending
+file.
 
-Ưu điểm:
-
-- Không cướp focus cửa sổ
-- Có thể làm việc ứng dụng khác song song.
+See `docs/file-ipc-error-model.md` and `docs/file-ipc-manual-test.md`.
 
 ---
 
@@ -393,6 +385,7 @@ PostMessageW(WM_CHAR)
 | AUTOCAD_MCP_BACKEND | auto | chọn backend |
 | AUTOCAD_MCP_IPC_DIR | C:/temp | thư mục IPC |
 | AUTOCAD_MCP_IPC_TIMEOUT | 10 | timeout |
+| AUTOCAD_MCP_COM_PROGID | auto | optional running AutoCAD COM ProgID override |
 | AUTOCAD_MCP_ONLY_TEXT | false | tắt screenshot |
 
 ---
@@ -451,7 +444,8 @@ Các cập nhật chính:
 - save path
 - get_variables fix
 - polyline fix
-- ESC prefix
+- ActiveX/COM dispatch without UI keystrokes or ESC
+- Structured File IPC errors and per-document dispatcher probes
 - UTF8 fallback
 - IPC timeout config
 - thread-safe init

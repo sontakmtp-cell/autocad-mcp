@@ -58,5 +58,5 @@ operation, allow/deny, thời lượng, backend và outcome. Không ghi token, s
 `AUTOCAD_MCP_MAX_IMAGE_BYTES`. Ảnh vượt giới hạn bị từ chối, không bị log nội
 dung.
 
-OAuth, tunnel và production profile chưa được bật; OAuth không có verifier sẽ
-bị từ chối khởi động cho tới Phase 4.
+OAuth production đã được triển khai ở Phase 4; xem `docs/phase4-oauth.md`.
+No Authentication vẫn chỉ dành cho demo ngắn hạn.

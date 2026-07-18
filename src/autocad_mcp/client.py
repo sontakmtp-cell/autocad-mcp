@@ -12,9 +12,16 @@ from typing import Any
 
 import structlog
 from mcp.types import ImageContent, TextContent
+from mcp.server.auth.middleware.auth_context import get_access_token
 
 from autocad_mcp.backends.base import AutoCADBackend, CommandResult
-from autocad_mcp.config import ONLY_TEXT_FEEDBACK, TransportConfig, detect_backend, load_transport_config
+from autocad_mcp.config import (
+    ONLY_TEXT_FEEDBACK,
+    TransportConfig,
+    detect_backend,
+    get_active_transport_config,
+    load_transport_config,
+)
 from autocad_mcp.remote_policy import evaluate_operation
 
 log = structlog.get_logger()
@@ -25,6 +32,12 @@ log = structlog.get_logger()
 
 _backend: AutoCADBackend | None = None
 _init_lock = asyncio.Lock()
+
+
+def _current_transport_config() -> TransportConfig:
+    """Use the current HTTP app config, falling back to process environment."""
+
+    return get_active_transport_config() or load_transport_config()
 
 
 async def get_backend() -> AutoCADBackend:
@@ -162,12 +175,14 @@ def _safe(tool_name: str):
             operation = str(kwargs.get("operation", "unknown"))
             config: TransportConfig | None = None
             try:
-                config = load_transport_config()
+                config = _current_transport_config()
+                access_token = get_access_token()
                 decision = evaluate_operation(
                     tool=tool_name,
                     operation=operation,
                     data=kwargs.get("data"),
                     config=config,
+                    scopes=(access_token.scopes if access_token else None),
                 )
                 if not decision.allowed:
                     _audit(
@@ -261,7 +276,7 @@ async def add_screenshot_if_available(
     screenshot_result = await backend.get_screenshot()
 
     if screenshot_result.ok and screenshot_result.payload:
-        config = load_transport_config()
+        config = _current_transport_config()
         if config.transport == "streamable-http" and config.remote_profile != "off":
             try:
                 image_bytes = len(base64.b64decode(screenshot_result.payload, validate=True))
@@ -284,3 +299,38 @@ async def add_screenshot_if_available(
         return _format_result(result, True, screenshot_result.payload)
 
     return _json(result.to_dict())
+
+
+def format_screenshot_response(
+    screenshot_result: CommandResult,
+) -> list[TextContent | ImageContent] | str:
+    """Format a direct screenshot while enforcing remote payload limits."""
+
+    if not screenshot_result.ok or not screenshot_result.payload:
+        return _json(screenshot_result.to_dict())
+
+    config = _current_transport_config()
+    if config.transport == "streamable-http" and config.remote_profile != "off":
+        try:
+            image_bytes = len(base64.b64decode(screenshot_result.payload, validate=True))
+        except (ValueError, TypeError):
+            log.warning("screenshot_rejected", reason="invalid_base64")
+            return _json({"ok": False, "error": "Screenshot payload is invalid."})
+        if image_bytes > config.max_image_bytes:
+            log.warning(
+                "screenshot_rejected",
+                image_bytes=image_bytes,
+                max_image_bytes=config.max_image_bytes,
+            )
+            return _json(
+                {
+                    "ok": False,
+                    "error": "Screenshot exceeds the configured remote image size limit.",
+                    "max_image_bytes": config.max_image_bytes,
+                }
+            )
+
+    return [
+        TextContent(type="text", text=_json({"ok": True, "screenshot": "attached"})),
+        ImageContent(type="image", data=screenshot_result.payload, mimeType="image/png"),
+    ]

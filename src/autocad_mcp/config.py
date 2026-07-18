@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,6 +41,9 @@ MAX_IMAGE_BYTES_DEFAULT = 5 * 1024 * 1024
 TRANSPORTS = frozenset({"stdio", "streamable-http", "sse"})
 REMOTE_PROFILES = frozenset({"off", "dev", "production"})
 AUTH_MODES = frozenset({"none", "oauth"})
+OAUTH_READ_SCOPE = "autocad.read"
+OAUTH_WRITE_SCOPE = "autocad.write"
+OAUTH_SCOPES_DEFAULT = (OAUTH_READ_SCOPE, OAUTH_WRITE_SCOPE)
 
 
 @dataclass(frozen=True)
@@ -60,6 +64,7 @@ class TransportConfig:
     max_image_bytes: int = MAX_IMAGE_BYTES_DEFAULT
     oauth_issuer: str | None = None
     oauth_audience: str | None = None
+    oauth_scopes: tuple[str, ...] = OAUTH_SCOPES_DEFAULT
 
     def validate(self) -> "TransportConfig":
         if self.transport not in TRANSPORTS:
@@ -94,6 +99,30 @@ class TransportConfig:
         return self
 
 
+_active_transport_config: ContextVar[TransportConfig | None] = ContextVar(
+    "autocad_mcp_active_transport_config",
+    default=None,
+)
+
+
+def get_active_transport_config() -> TransportConfig | None:
+    """Return the HTTP request config currently active in this async context."""
+
+    return _active_transport_config.get()
+
+
+def bind_transport_config(config: TransportConfig) -> Token[TransportConfig | None]:
+    """Bind a transport config for the duration of one ASGI request."""
+
+    return _active_transport_config.set(config)
+
+
+def reset_transport_config(token: Token[TransportConfig | None]) -> None:
+    """Restore the previous transport config after an ASGI request."""
+
+    _active_transport_config.reset(token)
+
+
 def _env_bool(name: str, default: bool = False) -> bool:
     raw = os.environ.get(name)
     if raw is None or not raw.strip():
@@ -123,6 +152,11 @@ def _split_env_list(name: str) -> tuple[str, ...]:
     )
 
 
+def _split_scope_env(name: str) -> tuple[str, ...]:
+    raw = os.environ.get(name, "")
+    return tuple(item for item in raw.replace(";", " ").replace(",", " ").split() if item)
+
+
 def load_transport_config() -> TransportConfig:
     """Read and validate transport settings from the current environment."""
 
@@ -150,6 +184,7 @@ def load_transport_config() -> TransportConfig:
         ),
         oauth_issuer=os.environ.get("AUTOCAD_MCP_OAUTH_ISSUER", "").strip() or None,
         oauth_audience=os.environ.get("AUTOCAD_MCP_OAUTH_AUDIENCE", "").strip() or None,
+        oauth_scopes=_split_scope_env("AUTOCAD_MCP_OAUTH_SCOPES") or OAUTH_SCOPES_DEFAULT,
     )
     return config.validate()
 

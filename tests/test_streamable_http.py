@@ -88,7 +88,7 @@ async def test_initialize_tools_list_and_call(http_endpoint):
             initialize_result = await session.initialize()
             tools_result = await session.list_tools()
             call_result = await session.call_tool(
-                "system", {"operation": "runtime"}
+                "system", {"operation": "health"}
             )
 
     assert initialize_result.serverInfo.name == "autocad-mcp"
@@ -146,7 +146,7 @@ async def test_two_concurrent_mcp_requests(http_endpoint):
             async with ClientSession(read_stream, write_stream) as session:
                 await session.initialize()
                 result = await session.call_tool(
-                    "system", {"operation": "runtime"}
+                    "system", {"operation": "health"}
                 )
                 return result
 
@@ -156,6 +156,20 @@ async def test_two_concurrent_mcp_requests(http_endpoint):
     assert second.isError is False
     assert json.loads(_text_content(first)[0])["ok"] is True
     assert json.loads(_text_content(second)[0])["ok"] is True
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_remote_policy_denies_unlisted_operation(http_endpoint):
+    async with _new_client(http_endpoint) as (read_stream, write_stream, _):
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            result = await session.call_tool(
+                "system", {"operation": "runtime"}
+            )
+
+    payload = json.loads(_text_content(result)[0])
+    assert payload["ok"] is False
+    assert "not in the Phase 2 No Authentication safe allowlist" in payload["error"]
 
 
 def test_http_server_rejects_non_loopback_binding():

@@ -56,6 +56,7 @@ dependencies = [
     { name = "matplotlib" },
     { name = "mcp", extra = ["cli"] },
     { name = "pillow" },
+    { name = "pyjwt", extra = ["crypto"] },
     { name = "pywin32", marker = "sys_platform == 'win32'" },
     { name = "structlog" },
 ]
@@ -72,6 +73,7 @@ requires-dist = [
     { name = "matplotlib", specifier = ">=3.7" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.2.1,<2.0" },
     { name = "pillow", specifier = ">=10.0.0" },
+    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.11.0,<3.0" },
     { name = "pywin32", marker = "sys_platform == 'win32'", specifier = ">=305" },
     { name = "structlog", specifier = ">=24.0.0" },
 ]

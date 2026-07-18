@@ -13,6 +13,7 @@ from autocad_mcp.client import (
     _json,
     _safe,
     add_screenshot_if_available,
+    format_screenshot_response,
     get_backend,
 )
 from autocad_mcp.config import load_transport_config
@@ -24,12 +25,23 @@ ToolResult = str | list
 log = structlog.get_logger()
 
 _transport_config = load_transport_config()
+_oauth_runtime = None
+if (
+    _transport_config.transport == "streamable-http"
+    and _transport_config.auth_mode == "oauth"
+):
+    from autocad_mcp.oauth import create_oauth_runtime
+
+    _oauth_runtime = create_oauth_runtime(_transport_config)
+
 mcp = FastMCP(
     "autocad-mcp",
     host=_transport_config.host,
     port=_transport_config.port,
     streamable_http_path=_transport_config.path,
     stateless_http=_transport_config.stateless_http,
+    auth=_oauth_runtime.auth_settings if _oauth_runtime else None,
+    token_verifier=_oauth_runtime.verifier if _oauth_runtime else None,
 )
 
 
@@ -449,14 +461,7 @@ async def view(
         return _json(result.to_dict())
     elif operation == "get_screenshot":
         result = await backend.get_screenshot()
-        if result.ok and result.payload:
-            from mcp.types import ImageContent, TextContent
-
-            return [
-                TextContent(type="text", text=_json({"ok": True, "screenshot": "attached"})),
-                ImageContent(type="image", data=result.payload, mimeType="image/png"),
-            ]
-        return _json(result.to_dict())
+        return format_screenshot_response(result)
     else:
         return _json({"error": f"Unknown view operation: {operation}"})
 

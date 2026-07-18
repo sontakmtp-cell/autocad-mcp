@@ -128,13 +128,26 @@ def test_remote_startup_requires_explicit_dev_no_auth():
         validate_remote_startup(_dev_config(allow_no_auth=False))
 
 
-def test_remote_startup_rejects_incomplete_or_unimplemented_oauth():
+def test_remote_startup_accepts_configured_oauth():
     with pytest.raises(RuntimeError, match="OAUTH_ISSUER"):
         validate_remote_startup(
             _dev_config(remote_profile="production", auth_mode="oauth")
         )
 
-    with pytest.raises(RuntimeError, match="not implemented until Phase 4"):
+    assert validate_remote_startup(
+        _dev_config(
+            remote_profile="production",
+            auth_mode="oauth",
+            oauth_issuer="https://issuer.example",
+            oauth_audience="https://example.com",
+            public_base_url="https://example.com",
+            allowed_hosts=("example.com",),
+        )
+    ) is None
+
+
+def test_production_oauth_requires_public_resource_url():
+    with pytest.raises(RuntimeError, match="PUBLIC_BASE_URL"):
         validate_remote_startup(
             _dev_config(
                 remote_profile="production",
@@ -144,6 +157,36 @@ def test_remote_startup_rejects_incomplete_or_unimplemented_oauth():
                 allowed_hosts=("example.com",),
             )
         )
+
+
+@pytest.mark.parametrize(
+    ("tool", "operation", "scopes", "expected_code"),
+    [
+        ("drawing", "info", ("autocad.read",), "allow"),
+        ("entity", "create_line", ("autocad.read",), "scope_missing"),
+        ("entity", "create_line", ("autocad.read", "autocad.write"), "allow"),
+        ("system", "execute_lisp", ("autocad.read", "autocad.write"), "execute_lisp_denied"),
+        ("drawing", "info", (), "scope_missing"),
+    ],
+)
+def test_oauth_scope_policy(tool, operation, scopes, expected_code):
+    decision = evaluate_operation(
+        tool=tool,
+        operation=operation,
+        data=None,
+        scopes=scopes,
+        config=_dev_config(
+            remote_profile="production",
+            auth_mode="oauth",
+            oauth_issuer="https://issuer.example",
+            oauth_audience="https://example.com",
+            public_base_url="https://example.com",
+            allowed_hosts=("example.com",),
+        ),
+    )
+
+    assert decision.code == expected_code
+    assert decision.allowed is (expected_code == "allow")
 
 
 def test_remote_startup_requires_https_public_url():
@@ -278,6 +321,36 @@ async def test_remote_screenshot_size_guard(monkeypatch):
     )
     payload = json.loads(result)
 
+    assert payload["ok"] is False
+    assert "size limit" in payload["error"]
+    assert "0123456789" not in result
+
+
+@pytest.mark.asyncio
+async def test_view_screenshot_size_guard(monkeypatch):
+    class FakeBackend:
+        name = "fake"
+
+        async def get_screenshot(self):
+            return CommandResult(
+                ok=True,
+                payload=base64.b64encode(b"0123456789").decode("ascii"),
+            )
+
+    monkeypatch.setenv("AUTOCAD_MCP_TRANSPORT", "streamable-http")
+    monkeypatch.setenv("AUTOCAD_MCP_REMOTE_PROFILE", "dev")
+    monkeypatch.setenv("AUTOCAD_MCP_AUTH_MODE", "none")
+    monkeypatch.setenv("AUTOCAD_MCP_ALLOW_NO_AUTH", "1")
+    monkeypatch.setenv("AUTOCAD_MCP_MAX_IMAGE_BYTES", "5")
+    monkeypatch.setattr(client, "_backend", FakeBackend())
+
+    from autocad_mcp.server import mcp
+
+    result = await mcp._tool_manager._tools["view"].fn(
+        operation="get_screenshot"
+    )
+
+    payload = json.loads(result)
     assert payload["ok"] is False
     assert "size limit" in payload["error"]
     assert "0123456789" not in result

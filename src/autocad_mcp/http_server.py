@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import uvicorn
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from autocad_mcp.config import HTTP_HOST_DEFAULT, TransportConfig, load_transport_config
+from autocad_mcp.config import (
+    HTTP_HOST_DEFAULT,
+    TransportConfig,
+    bind_transport_config,
+    load_transport_config,
+    reset_transport_config,
+)
 from autocad_mcp.remote_policy import host_is_allowed, validate_remote_startup
 from autocad_mcp.server import mcp
 
@@ -24,6 +31,21 @@ class AllowedHostMiddleware(BaseHTTPMiddleware):
         if not host_is_allowed(request.headers.get("host", ""), self.allowed_hosts):
             return JSONResponse({"error": "Host is not allowed."}, status_code=403)
         return await call_next(request)
+
+
+class TransportConfigMiddleware:
+    """Make the app's validated config available to tool handlers."""
+
+    def __init__(self, app, *, config: TransportConfig):
+        self.app = app
+        self.config = config
+
+    async def __call__(self, scope, receive, send):
+        token = bind_transport_config(self.config)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            reset_transport_config(token)
 
 
 def create_app(config: TransportConfig | None = None) -> Starlette:
@@ -61,7 +83,35 @@ def create_app(config: TransportConfig | None = None) -> Starlette:
             f"(configured={configured_stateless!r}, requested={config.stateless_http!r})."
         )
 
+    if config.auth_mode == "oauth" and getattr(mcp.settings, "auth", None) is None:
+        raise RuntimeError(
+            "OAuth settings were loaded before the current environment. Restart "
+            "the process after setting AUTOCAD_MCP_AUTH_MODE=oauth."
+        )
+
+    if config.allowed_hosts:
+        allowed_origins = []
+        if config.public_base_url:
+            allowed_origins.append(config.public_base_url.rstrip("/"))
+        mcp.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=list(config.allowed_hosts),
+            allowed_origins=allowed_origins,
+        )
+
     app = mcp.streamable_http_app()
+    if config.auth_mode == "oauth":
+        from autocad_mcp.oauth import protected_resource_metadata_route
+
+        metadata_route = protected_resource_metadata_route(config)
+        for index, route in enumerate(app.routes):
+            if getattr(route, "path", None) == metadata_route.path:
+                app.routes[index] = metadata_route
+                break
+        else:  # pragma: no cover - FastMCP normally creates this route for us
+            app.routes.insert(0, metadata_route)
+
+    app.add_middleware(TransportConfigMiddleware, config=config)
     if config.allowed_hosts:
         app.add_middleware(AllowedHostMiddleware, allowed_hosts=config.allowed_hosts)
     return app

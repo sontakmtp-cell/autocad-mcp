@@ -56,6 +56,9 @@ Thumbs.db
 
 # User-specific configuration
 claude_desktop_config.json
+.env
+.env.*
+!.env.example
 
 # Local test files
 test_*.dwg

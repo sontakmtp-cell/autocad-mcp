@@ -1,11 +1,11 @@
 # Phase 0 — Baseline và kết quả spike
 
 Ngày thực hiện: 2026-07-18  
-Repo chuẩn: `H:\AI\autocad-mcp`
+Repo chuẩn: `D:\AI\autocad-mcp`
 
 ## 1. Xác nhận codebase
 
-- Root đang làm việc là `H:\AI\autocad-mcp`.
+- Root đang làm việc là `D:\AI\autocad-mcp`.
 - Package chính nằm ở `src\autocad_mcp`.
 - Không sử dụng một thư mục `autocad-mcp-v2` khác.
 - Entry point hiện tại là `python -m autocad_mcp`, gọi `server.main()` và chạy

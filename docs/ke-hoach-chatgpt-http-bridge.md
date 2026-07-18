@@ -154,6 +154,7 @@ Không tự viết một OAuth server đơn giản thiếu kiểm chứng để 
 | `AUTOCAD_MCP_IPC_TIMEOUT` | Timeout File IPC | Giữ hiện trạng |
 | `AUTOCAD_MCP_OAUTH_ISSUER` | OAuth issuer | Bắt buộc ở production |
 | `AUTOCAD_MCP_OAUTH_AUDIENCE` | Resource audience | Bắt buộc ở production |
+| `AUTOCAD_MCP_OAUTH_SCOPES` | Scope đọc/ghi, phân tách bằng space | `autocad.read autocad.write` |
 
 Các secret OAuth không được lưu trong repo, `.env.example`, script hoặc log.
 
@@ -389,7 +390,9 @@ Tên file OAuth có thể đổi theo SDK/provider sau spike; không khóa cứn
 
 ### Phase 3 — Tunnel + ChatGPT Plus E2E dev
 
-1. Chạy `run-http-dev.ps1` với drawing thử.
+1. Cài `cloudflared` và chạy `scripts/run-phase3-dev.ps1` với drawing thử. Script
+   tự khởi động HTTP server, tạo Quick Tunnel, lấy hostname và khởi động lại
+   server với `AUTOCAD_MCP_ALLOWED_HOSTS` đúng hostname tunnel.
 2. Mở tunnel tạm thời.
 3. ChatGPT: Settings -> Security and login -> Developer mode.
 4. Settings -> Plugins -> tạo app bằng URL `https://<tunnel-host>/mcp`.
@@ -412,6 +415,12 @@ Tên file OAuth có thể đổi theo SDK/provider sau spike; không khóa cứn
 5. Test login, refresh, expiry, revoke và token sai audience.
 6. Bật production profile; xác minh no-auth bị từ chối khởi động.
 7. Kết nối lại app ChatGPT bằng OAuth.
+
+Đã triển khai trong repo: OIDC discovery/JWKS JWT verifier, protected-resource
+metadata, Bearer challenge và policy `autocad.read`/`autocad.write` trong
+`src/autocad_mcp/oauth.py`, cùng script `scripts/run-phase4-oauth.ps1`.
+Provider OIDC thật và hostname HTTPS ổn định vẫn cần cấu hình trước khi chạy
+E2E login/refresh/revoke với ChatGPT.
 
 **Done:** Chỉ người đã đăng nhập/được cấp scope mới gọi được MCP qua tunnel.
 

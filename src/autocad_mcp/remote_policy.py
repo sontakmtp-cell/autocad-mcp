@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import ntpath
 import os
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from urllib.parse import urlparse
 
-from autocad_mcp.config import HTTP_HOST_DEFAULT, TransportConfig
+from autocad_mcp.config import (
+    HTTP_HOST_DEFAULT,
+    OAUTH_READ_SCOPE,
+    OAUTH_WRITE_SCOPE,
+    TransportConfig,
+)
 
 
 SAFE_NO_AUTH_OPERATIONS: dict[str, frozenset[str]] = {
@@ -25,6 +31,16 @@ PATH_OPERATIONS: dict[str, frozenset[str]] = {
     "save": frozenset({".dwg", ".dxf"}),
     "save_as_dxf": frozenset({".dxf"}),
     "plot_pdf": frozenset({".pdf"}),
+}
+
+OAUTH_READ_OPERATIONS: dict[str, frozenset[str]] = {
+    "system": frozenset({"health", "status", "get_backend", "runtime"}),
+    "drawing": frozenset({"info", "get_variables"}),
+    "entity": frozenset({"list", "count", "get"}),
+    "layer": frozenset({"list"}),
+    "block": frozenset({"list", "get_attributes"}),
+    "pid": frozenset({"list_symbols"}),
+    "view": frozenset({"get_screenshot"}),
 }
 
 
@@ -53,6 +69,7 @@ def evaluate_operation(
     operation: str,
     data: dict | None,
     config: TransportConfig,
+    scopes: Collection[str] | None = None,
 ) -> PolicyDecision:
     """Return the centralized allow/deny decision for one tool operation."""
 
@@ -68,26 +85,41 @@ def evaluate_operation(
             "execute_lisp is permanently disabled for every remote profile.",
         )
 
-    if config.auth_mode != "none":
+    if config.auth_mode == "oauth":
+        granted_scopes = set(scopes or ())
+        if OAUTH_READ_SCOPE not in granted_scopes:
+            return PolicyDecision.deny(
+                "scope_missing",
+                f"OAuth token requires the {OAUTH_READ_SCOPE} scope.",
+            )
+        if normalized_operation not in OAUTH_READ_OPERATIONS.get(
+            normalized_tool, frozenset()
+        ) and OAUTH_WRITE_SCOPE not in granted_scopes:
+            return PolicyDecision.deny(
+                "scope_missing",
+                f"OAuth token requires the {OAUTH_WRITE_SCOPE} scope for this operation.",
+            )
+    elif config.auth_mode != "none":
         return PolicyDecision.deny(
             "auth_not_ready",
-            "OAuth-backed remote authorization is not enabled in Phase 2.",
+            "Unsupported remote authentication mode.",
         )
 
-    if config.remote_profile != "dev" or not config.allow_no_auth:
-        return PolicyDecision.deny(
-            "no_auth_not_explicitly_enabled",
-            "No Authentication requires REMOTE_PROFILE=dev and "
-            "AUTOCAD_MCP_ALLOW_NO_AUTH=1.",
-        )
+    if config.auth_mode == "none":
+        if config.remote_profile != "dev" or not config.allow_no_auth:
+            return PolicyDecision.deny(
+                "no_auth_not_explicitly_enabled",
+                "No Authentication requires REMOTE_PROFILE=dev and "
+                "AUTOCAD_MCP_ALLOW_NO_AUTH=1.",
+            )
 
-    allowed_operations = SAFE_NO_AUTH_OPERATIONS.get(normalized_tool, frozenset())
-    if normalized_operation not in allowed_operations:
-        return PolicyDecision.deny(
-            "operation_not_allowlisted",
-            f"{normalized_tool}.{normalized_operation} is not in the Phase 2 "
-            "No Authentication safe allowlist.",
-        )
+        allowed_operations = SAFE_NO_AUTH_OPERATIONS.get(normalized_tool, frozenset())
+        if normalized_operation not in allowed_operations:
+            return PolicyDecision.deny(
+                "operation_not_allowlisted",
+                f"{normalized_tool}.{normalized_operation} is not in the Phase 2 "
+                "No Authentication safe allowlist.",
+            )
 
     if normalized_tool == "drawing" and normalized_operation in PATH_OPERATIONS:
         path_decision = check_path_allowed(
@@ -245,13 +277,17 @@ def validate_remote_startup(config: TransportConfig) -> None:
                 "OAuth mode requires AUTOCAD_MCP_OAUTH_ISSUER and "
                 "AUTOCAD_MCP_OAUTH_AUDIENCE."
             )
-        raise RuntimeError(
-            "OAuth validation is not implemented until Phase 4; refusing to start."
-        )
+        issuer = urlparse(config.oauth_issuer)
+        if issuer.scheme != "https" and not _is_local_url(config.oauth_issuer):
+            raise RuntimeError("AUTOCAD_MCP_OAUTH_ISSUER must use HTTPS remotely.")
+        if issuer.query or issuer.fragment:
+            raise RuntimeError("AUTOCAD_MCP_OAUTH_ISSUER must not contain query or fragment.")
 
     if config.remote_profile == "production":
         if config.auth_mode != "oauth":
             raise RuntimeError("Production remote profile requires OAuth.")
+        if not config.public_base_url:
+            raise RuntimeError("Production remote profile requires AUTOCAD_MCP_PUBLIC_BASE_URL.")
         if not _is_local_url(config.public_base_url) and not config.allowed_hosts:
             raise RuntimeError(
                 "Production remote profile requires AUTOCAD_MCP_ALLOWED_HOSTS."
@@ -264,6 +300,13 @@ def validate_remote_startup(config: TransportConfig) -> None:
         if not config.allowed_hosts:
             raise RuntimeError(
                 "AUTOCAD_MCP_PUBLIC_BASE_URL requires AUTOCAD_MCP_ALLOWED_HOSTS."
+            )
+        if parsed.hostname and parsed.hostname.lower().rstrip(".") not in {
+            host.lower().rstrip(".") for host in config.allowed_hosts
+        }:
+            raise RuntimeError(
+                "AUTOCAD_MCP_PUBLIC_BASE_URL hostname must be present in "
+                "AUTOCAD_MCP_ALLOWED_HOSTS."
             )
 
 

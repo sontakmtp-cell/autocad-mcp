@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import structlog
@@ -25,6 +26,132 @@ ONLY_TEXT_FEEDBACK = os.environ.get("AUTOCAD_MCP_ONLY_TEXT", "").lower() in ("1"
 
 # Win32 availability
 WIN32_AVAILABLE = sys.platform == "win32"
+
+
+# MCP transport configuration. The default remains stdio for compatibility
+# with existing MCP clients. HTTP is intentionally local-only in Phase 1.
+TRANSPORT_DEFAULT = "stdio"
+HTTP_HOST_DEFAULT = "127.0.0.1"
+HTTP_PORT_DEFAULT = 8765
+HTTP_PATH_DEFAULT = "/mcp"
+REMOTE_PROFILE_DEFAULT = "off"
+AUTH_MODE_DEFAULT = "none"
+MAX_IMAGE_BYTES_DEFAULT = 5 * 1024 * 1024
+TRANSPORTS = frozenset({"stdio", "streamable-http", "sse"})
+REMOTE_PROFILES = frozenset({"off", "dev", "production"})
+AUTH_MODES = frozenset({"none", "oauth"})
+
+
+@dataclass(frozen=True)
+class TransportConfig:
+    """Runtime transport settings loaded from environment variables."""
+
+    transport: str = TRANSPORT_DEFAULT
+    host: str = HTTP_HOST_DEFAULT
+    port: int = HTTP_PORT_DEFAULT
+    path: str = HTTP_PATH_DEFAULT
+    stateless_http: bool = False
+    remote_profile: str = REMOTE_PROFILE_DEFAULT
+    auth_mode: str = AUTH_MODE_DEFAULT
+    allow_no_auth: bool = False
+    allowed_dirs: tuple[str, ...] = ()
+    allowed_hosts: tuple[str, ...] = ()
+    public_base_url: str | None = None
+    max_image_bytes: int = MAX_IMAGE_BYTES_DEFAULT
+    oauth_issuer: str | None = None
+    oauth_audience: str | None = None
+
+    def validate(self) -> "TransportConfig":
+        if self.transport not in TRANSPORTS:
+            supported = ", ".join(sorted(TRANSPORTS))
+            raise ValueError(
+                f"Unsupported AUTOCAD_MCP_TRANSPORT={self.transport!r}. "
+                f"Expected one of: {supported}."
+            )
+        if self.remote_profile not in REMOTE_PROFILES:
+            supported = ", ".join(sorted(REMOTE_PROFILES))
+            raise ValueError(
+                f"Unsupported AUTOCAD_MCP_REMOTE_PROFILE={self.remote_profile!r}. "
+                f"Expected one of: {supported}."
+            )
+        if self.auth_mode not in AUTH_MODES:
+            supported = ", ".join(sorted(AUTH_MODES))
+            raise ValueError(
+                f"Unsupported AUTOCAD_MCP_AUTH_MODE={self.auth_mode!r}. "
+                f"Expected one of: {supported}."
+            )
+        if not 1 <= self.port <= 65535:
+            raise ValueError(f"AUTOCAD_MCP_PORT must be between 1 and 65535, got {self.port}.")
+        if self.max_image_bytes <= 0:
+            raise ValueError(
+                "AUTOCAD_MCP_MAX_IMAGE_BYTES must be greater than zero, "
+                f"got {self.max_image_bytes}."
+            )
+        if not self.path.startswith("/"):
+            raise ValueError(f"AUTOCAD_MCP_PATH must start with '/', got {self.path!r}.")
+        if "?" in self.path or "#" in self.path or any(char.isspace() for char in self.path):
+            raise ValueError("AUTOCAD_MCP_PATH must not contain query, fragment, or whitespace.")
+        return self
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean value, got {raw!r}.")
+
+
+def _normalize_http_path(raw: str) -> str:
+    path = raw.strip() or HTTP_PATH_DEFAULT
+    if not path.startswith("/"):
+        path = "/" + path
+    if len(path) > 1:
+        path = path.rstrip("/")
+    return path or "/"
+
+
+def _split_env_list(name: str) -> tuple[str, ...]:
+    return tuple(
+        item.strip()
+        for item in os.environ.get(name, "").split(";")
+        if item.strip()
+    )
+
+
+def load_transport_config() -> TransportConfig:
+    """Read and validate transport settings from the current environment."""
+
+    config = TransportConfig(
+        transport=os.environ.get("AUTOCAD_MCP_TRANSPORT", TRANSPORT_DEFAULT).strip().lower(),
+        host=os.environ.get("AUTOCAD_MCP_HOST", HTTP_HOST_DEFAULT).strip(),
+        port=int(os.environ.get("AUTOCAD_MCP_PORT", str(HTTP_PORT_DEFAULT))),
+        path=_normalize_http_path(os.environ.get("AUTOCAD_MCP_PATH", HTTP_PATH_DEFAULT)),
+        stateless_http=_env_bool("AUTOCAD_MCP_STATELESS_HTTP", False),
+        remote_profile=os.environ.get(
+            "AUTOCAD_MCP_REMOTE_PROFILE", REMOTE_PROFILE_DEFAULT
+        ).strip().lower(),
+        auth_mode=os.environ.get("AUTOCAD_MCP_AUTH_MODE", AUTH_MODE_DEFAULT)
+        .strip()
+        .lower(),
+        allow_no_auth=_env_bool("AUTOCAD_MCP_ALLOW_NO_AUTH", False),
+        allowed_dirs=_split_env_list("AUTOCAD_MCP_ALLOWED_DIRS"),
+        allowed_hosts=tuple(
+            host.lower().rstrip(".")
+            for host in _split_env_list("AUTOCAD_MCP_ALLOWED_HOSTS")
+        ),
+        public_base_url=os.environ.get("AUTOCAD_MCP_PUBLIC_BASE_URL", "").strip() or None,
+        max_image_bytes=int(
+            os.environ.get("AUTOCAD_MCP_MAX_IMAGE_BYTES", str(MAX_IMAGE_BYTES_DEFAULT))
+        ),
+        oauth_issuer=os.environ.get("AUTOCAD_MCP_OAUTH_ISSUER", "").strip() or None,
+        oauth_audience=os.environ.get("AUTOCAD_MCP_OAUTH_AUDIENCE", "").strip() or None,
+    )
+    return config.validate()
 
 
 def _current_backend_env() -> str:

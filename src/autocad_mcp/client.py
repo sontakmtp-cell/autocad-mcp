@@ -6,13 +6,16 @@ import asyncio
 import base64
 import functools
 import json
+import time
+import uuid
 from typing import Any
 
 import structlog
 from mcp.types import ImageContent, TextContent
 
 from autocad_mcp.backends.base import AutoCADBackend, CommandResult
-from autocad_mcp.config import ONLY_TEXT_FEEDBACK, detect_backend
+from autocad_mcp.config import ONLY_TEXT_FEEDBACK, TransportConfig, detect_backend, load_transport_config
+from autocad_mcp.remote_policy import evaluate_operation
 
 log = structlog.get_logger()
 
@@ -69,6 +72,56 @@ def _json(data: Any) -> str:
     return json.dumps(data, default=str, separators=(",", ":"))
 
 
+def _result_outcome(result: Any) -> str:
+    """Classify a tool return value without logging its content."""
+
+    texts: list[str] = []
+    if isinstance(result, str):
+        texts.append(result)
+    elif isinstance(result, list):
+        texts.extend(
+            item.text
+            for item in result
+            if isinstance(getattr(item, "text", None), str)
+        )
+
+    for text in texts:
+        try:
+            payload = json.loads(text)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(payload, dict) and payload.get("ok") is False:
+            return "error"
+    return "ok"
+
+
+def _audit(
+    *,
+    request_id: str,
+    config: TransportConfig,
+    tool: str,
+    operation: str,
+    decision: str,
+    outcome: str,
+    started_at: float,
+) -> None:
+    """Write a safe audit record; never include tokens, paths, or payloads."""
+
+    log.info(
+        "mcp_audit",
+        request_id=request_id,
+        profile=config.remote_profile,
+        auth_mode=config.auth_mode,
+        transport=config.transport,
+        tool=tool,
+        operation=operation,
+        decision=decision,
+        outcome=outcome,
+        duration_ms=round((time.perf_counter() - started_at) * 1000, 2),
+        backend=getattr(_backend, "name", None),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Error formatting with actionable hints
 # ---------------------------------------------------------------------------
@@ -104,9 +157,59 @@ def _safe(tool_name: str):
     def decorator(fn):
         @functools.wraps(fn)
         async def wrapper(*args, **kwargs):
+            request_id = uuid.uuid4().hex[:12]
+            started_at = time.perf_counter()
+            operation = str(kwargs.get("operation", "unknown"))
+            config: TransportConfig | None = None
             try:
-                return await fn(*args, **kwargs)
+                config = load_transport_config()
+                decision = evaluate_operation(
+                    tool=tool_name,
+                    operation=operation,
+                    data=kwargs.get("data"),
+                    config=config,
+                )
+                if not decision.allowed:
+                    _audit(
+                        request_id=request_id,
+                        config=config,
+                        tool=tool_name,
+                        operation=operation,
+                        decision=f"deny:{decision.code}",
+                        outcome="denied",
+                        started_at=started_at,
+                    )
+                    return _json(
+                        {
+                            "ok": False,
+                            "error": f"Remote policy denied {tool_name}.{operation}: "
+                            f"{decision.reason}",
+                            "request_id": request_id,
+                        }
+                    )
+
+                result = await fn(*args, **kwargs)
+                _audit(
+                    request_id=request_id,
+                    config=config,
+                    tool=tool_name,
+                    operation=operation,
+                    decision="allow",
+                    outcome=_result_outcome(result),
+                    started_at=started_at,
+                )
+                return result
             except Exception as e:
+                if config is not None:
+                    _audit(
+                        request_id=request_id,
+                        config=config,
+                        tool=tool_name,
+                        operation=operation,
+                        decision="allow",
+                        outcome="error",
+                        started_at=started_at,
+                    )
                 op = kwargs.get("operation", "unknown")
                 log.error("tool_error", tool=tool_name, operation=op, error=str(e))
                 return _error(e, f"{tool_name}.{op}")
@@ -158,6 +261,26 @@ async def add_screenshot_if_available(
     screenshot_result = await backend.get_screenshot()
 
     if screenshot_result.ok and screenshot_result.payload:
+        config = load_transport_config()
+        if config.transport == "streamable-http" and config.remote_profile != "off":
+            try:
+                image_bytes = len(base64.b64decode(screenshot_result.payload, validate=True))
+            except (ValueError, TypeError):
+                log.warning("screenshot_rejected", reason="invalid_base64")
+                return _json({"ok": False, "error": "Screenshot payload is invalid."})
+            if image_bytes > config.max_image_bytes:
+                log.warning(
+                    "screenshot_rejected",
+                    image_bytes=image_bytes,
+                    max_image_bytes=config.max_image_bytes,
+                )
+                return _json(
+                    {
+                        "ok": False,
+                        "error": "Screenshot exceeds the configured remote image size limit.",
+                        "max_image_bytes": config.max_image_bytes,
+                    }
+                )
         return _format_result(result, True, screenshot_result.payload)
 
     return _json(result.to_dict())

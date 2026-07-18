@@ -1,0 +1,14 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "autocad": {
+      "type": "local",
+      "command": [
+        "H:/AI/autocad-mcp/.venv/Scripts/python.exe",
+        "-m",
+        "autocad_mcp"
+      ],
+      "enabled": true
+    }
+  }
+}

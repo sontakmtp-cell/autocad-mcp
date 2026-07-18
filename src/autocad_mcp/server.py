@@ -15,6 +15,7 @@ from autocad_mcp.client import (
     add_screenshot_if_available,
     get_backend,
 )
+from autocad_mcp.config import load_transport_config
 
 # FastMCP validates return types via Pydantic. Tools that may return
 # ImageContent (screenshot) alongside TextContent need a union return type.
@@ -22,7 +23,14 @@ ToolResult = str | list
 
 log = structlog.get_logger()
 
-mcp = FastMCP("autocad-mcp")
+_transport_config = load_transport_config()
+mcp = FastMCP(
+    "autocad-mcp",
+    host=_transport_config.host,
+    port=_transport_config.port,
+    streamable_http_path=_transport_config.path,
+    stateless_http=_transport_config.stateless_http,
+)
 
 
 # ==========================================================================
@@ -415,7 +423,7 @@ async def pid(
 # ==========================================================================
 
 
-@mcp.tool(annotations={"title": "AutoCAD View Operations", "readOnlyHint": True})
+@mcp.tool(annotations={"title": "AutoCAD View Operations", "readOnlyHint": False})
 @_safe("view")
 async def view(
     operation: str,
@@ -458,7 +466,7 @@ async def view(
 # ==========================================================================
 
 
-@mcp.tool(annotations={"title": "AutoCAD MCP System", "readOnlyHint": True})
+@mcp.tool(annotations={"title": "AutoCAD MCP System", "readOnlyHint": False})
 @_safe("system")
 async def system(
     operation: str,
@@ -525,7 +533,7 @@ async def system(
 
 
 def main():
-    """Run the MCP server on stdio transport."""
+    """Run the MCP server on the configured transport (stdio by default)."""
     import logging
     import sys
 
@@ -546,5 +554,21 @@ def main():
         ],
     )
 
-    log.info("autocad_mcp_starting", version="3.1.0")
-    mcp.run(transport="stdio")
+    transport_config = load_transport_config()
+    log.info(
+        "autocad_mcp_starting",
+        version="3.1.0",
+        transport=transport_config.transport,
+    )
+
+    if transport_config.transport == "stdio":
+        mcp.run(transport="stdio")
+    elif transport_config.transport == "streamable-http":
+        from autocad_mcp.http_server import run_http_server
+
+        run_http_server(transport_config)
+    else:
+        raise RuntimeError(
+            "AUTOCAD_MCP_TRANSPORT=sse is not implemented in Phase 1. "
+            "Use 'stdio' or 'streamable-http'."
+        )

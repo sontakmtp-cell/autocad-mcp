@@ -36,17 +36,20 @@ def test_activex_engine_uses_direct_entity_creation_and_single_regen():
     assert "commit_engine" in text
     assert "activex" in text
     assert "regen_count" in text
-    assert "\\\"regen_count\\\":1" in text
+    assert "\"regen_count\":1" in text
 
 
-def test_phase2_loader_loads_engine_then_activex_override():
+def test_loader_keeps_engine_before_activex_override():
     text = LOADER_LISP.read_text(encoding="utf-8")
 
     engine_index = text.index('(findfile "auto_dimension.lsp")')
     activex_index = text.index('(findfile "auto_dimension_activex.lsp")')
+    engine_load_index = text.index('(load mcp-ad-engine-path)')
+    activex_load_index = text.index('(load mcp-ad-activex-path)')
 
     assert engine_index < activex_index
-    assert "phase2-2026-07-19" in text
+    assert engine_load_index < activex_load_index
+    assert "phase3-2026-07-19" in text
     assert len(text.splitlines()) < 55
 
 

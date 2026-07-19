@@ -36,7 +36,7 @@ def test_activex_engine_uses_direct_entity_creation_and_single_regen():
     assert "commit_engine" in text
     assert "activex" in text
     assert "regen_count" in text
-    assert "\"regen_count\":1" in text
+    assert r'\"regen_count\":1' in text
 
 
 def test_loader_keeps_engine_before_activex_override():

@@ -159,6 +159,14 @@ def test_json_records_support_feature_audit_and_repair_planning():
     json.dumps(repair.to_dict())
 
 
+def test_json_line_record_accepts_exported_points_shape():
+    report = recognize_mechanical_features(
+        [{"type": "LINE", "handle": "L1", "points": [[0, 0], [10, 0]]}]
+    )
+
+    assert report.features == ()
+
+
 def test_audit_detects_detached_references_and_chain_accumulation_error():
     _, modelspace = _drawing()
     modelspace.add_lwpolyline([(0, 0), (100, 0), (100, 40), (0, 40)], close=True)

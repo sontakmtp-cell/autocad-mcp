@@ -88,6 +88,107 @@ def _preview_result(payload: dict[str, Any], image_data: str, enabled: bool) -> 
     ]
 
 
+def _dimension_type_counts(dimensions: list[Any]) -> dict[str, int]:
+    counts = {
+        "linear": 0,
+        "aligned": 0,
+        "diameter": 0,
+        "radius": 0,
+        "angular": 0,
+        "center": 0,
+        "text": 0,
+    }
+    aliases = {
+        "dimension_linear": "linear",
+        "dimension_aligned": "aligned",
+        "dimension_angular": "angular",
+        "dimension_diameter": "diameter",
+        "dimension_radius": "radius",
+        "center_mark": "center",
+        "create_text": "text",
+    }
+    for dimension in dimensions:
+        kind = str(getattr(dimension, "kind", "")).strip().lower()
+        kind = aliases.get(kind, kind)
+        if kind in counts:
+            counts[kind] += 1
+    return counts
+
+
+def _normalized_dimension_commit_result(
+    *,
+    committed: Any,
+    backend: Any,
+    context: dict[str, Any] | None = None,
+    timings: dict[str, Any] | None = None,
+    manual_batch: bool = False,
+) -> dict[str, Any]:
+    """Expose one stable result shape while retaining backend metadata."""
+
+    commit_result = dict(committed.commit_result or {})
+    target = dict(committed.target or {})
+    export_metrics = dict((context or {}).get("export_metrics") or {})
+    phase_timings = dict(timings or (context or {}).get("phase1_timings_ms") or {})
+
+    if export_metrics.get("selection_scope"):
+        selection_scope = str(export_metrics["selection_scope"])
+    elif manual_batch or target.get("manual_batch"):
+        selection_scope = "manual_batch"
+    elif target.get("use_current_selection"):
+        selection_scope = "current_selection"
+    elif target.get("entity_ids"):
+        selection_scope = "entity_ids"
+    elif target.get("region"):
+        selection_scope = "region"
+    elif target.get("target_part_id"):
+        selection_scope = "target_part"
+    else:
+        selection_scope = "modelspace"
+
+    dimensions = list(committed.dimensions)
+    commit_time = phase_timings.get("commit", 0)
+    total_time = phase_timings.get(
+        "total",
+        phase_timings.get("plan_total", phase_timings.get("server_before_screenshot", 0)),
+    )
+    scan_time = phase_timings.get(
+        "scan",
+        phase_timings.get("export_geometry", export_metrics.get("elapsed_ms", 0)),
+    )
+    dimension_time = phase_timings.get(
+        "dimension",
+        phase_timings.get(
+            "build_candidates",
+            phase_timings.get("normalize_batch", 0),
+        ),
+    )
+
+    return {
+        **commit_result,
+        "created_count": int(commit_result.get("dimensions_created", len(dimensions))),
+        "dimension_types": _dimension_type_counts(dimensions),
+        "selection_scope": selection_scope,
+        "scanned_count": int(export_metrics.get("scanned_count", 0) or 0),
+        "exported_count": int(
+            export_metrics.get("exported_count", len((context or {}).get("records", ())))
+            or 0
+        ),
+        "commit_engine": str(
+            commit_result.get("commit_engine")
+            or commit_result.get("backend")
+            or getattr(backend, "name", "unknown")
+        ),
+        "regen_count": int(commit_result.get("regen_count", 0) or 0),
+        "timings_ms": {
+            "scan": scan_time,
+            "detect_parts": phase_timings.get("detect_parts", 0),
+            "dimension": dimension_time,
+            "commit": commit_time,
+            "total": total_time,
+        },
+    }
+
+
 async def _new_plan(data: dict[str, Any]) -> tuple[Any, list[Any], dict[str, Any]]:
     options = AutoDimensionOptions.from_data(data)
     profile = _resolve_profile(data)
@@ -293,6 +394,11 @@ async def _run_annotation(
                 "target": committed.target,
                 "dimensions": [item.to_dict() for item in committed.dimensions],
                 **(committed.commit_result or {}),
+                **_normalized_dimension_commit_result(
+                    committed=committed,
+                    backend=backend,
+                    context=context,
+                ),
             },
         )
         return await add_screenshot_if_available(result, include_image)

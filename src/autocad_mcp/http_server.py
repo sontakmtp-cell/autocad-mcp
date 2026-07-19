@@ -17,7 +17,7 @@ from autocad_mcp.config import (
     reset_transport_config,
 )
 from autocad_mcp.remote_policy import host_is_allowed, validate_remote_startup
-from autocad_mcp.server import mcp
+from autocad_mcp.server import mcp, register_optional_features
 
 
 class AllowedHostMiddleware(BaseHTTPMiddleware):
@@ -55,6 +55,7 @@ def create_app(config: TransportConfig | None = None) -> Starlette:
     configured when ``server`` is imported, before this factory is called.
     """
 
+    register_optional_features()
     config = (config or load_transport_config()).validate()
     if config.transport != "streamable-http":
         raise RuntimeError(

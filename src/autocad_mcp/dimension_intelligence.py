@@ -41,6 +41,10 @@ class _RecordDXF:
 
     def get(self, name: str, default: Any = None) -> Any:
         value = self._record.get(name, default)
+        if value is None and name in {"start", "end"}:
+            points = self._record.get("points", [])
+            if points:
+                value = points[0 if name == "start" else -1]
         if name in self._POINT_FIELDS and isinstance(value, (list, tuple)):
             return _RecordPoint(value)
         return value

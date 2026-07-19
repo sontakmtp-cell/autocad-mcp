@@ -18,7 +18,7 @@ from autocad_mcp.config import (
 
 
 SAFE_NO_AUTH_OPERATIONS: dict[str, frozenset[str]] = {
-    "system": frozenset({"health", "status", "get_backend"}),
+    "system": frozenset({"health", "status", "get_backend", "tool_manifest"}),
     "drawing": frozenset({"info"}),
     "entity": frozenset({"list", "count", "get"}),
     "layer": frozenset({"list"}),
@@ -34,7 +34,7 @@ PATH_OPERATIONS: dict[str, frozenset[str]] = {
 }
 
 OAUTH_READ_OPERATIONS: dict[str, frozenset[str]] = {
-    "system": frozenset({"health", "status", "get_backend", "runtime"}),
+    "system": frozenset({"health", "status", "get_backend", "runtime", "tool_manifest"}),
     "drawing": frozenset({"info", "get_variables"}),
     "entity": frozenset({"list", "count", "get"}),
     "layer": frozenset({"list"}),

@@ -39,6 +39,7 @@ def _dev_config(**overrides) -> TransportConfig:
         ("system", "health"),
         ("system", "status"),
         ("system", "get_backend"),
+        ("system", "tool_manifest"),
         ("drawing", "info"),
         ("entity", "list"),
         ("entity", "count"),
@@ -168,6 +169,7 @@ def test_production_oauth_requires_public_resource_url():
         ("annotation", "detect_parts", ("autocad.read",), "allow"),
         ("annotation", "plan_dimensions", ("autocad.read",), "allow"),
         ("annotation", "audit_dimensions", ("autocad.read",), "allow"),
+        ("system", "tool_manifest", ("autocad.read",), "allow"),
         ("annotation", "commit_dimension_plan", ("autocad.read",), "scope_missing"),
         (
             "annotation",

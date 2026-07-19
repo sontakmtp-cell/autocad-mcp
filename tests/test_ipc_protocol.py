@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from autocad_mcp.backends.base import BackendCapabilities, CommandResult
+from autocad_mcp.backends.file_ipc import FileIPCBackend
 
 
 # ---------------------------------------------------------------------------
@@ -536,3 +537,26 @@ class TestVariableNameStripping:
         names = None
         names_str = "" if not names else ";".join(names)
         assert names_str == ""
+
+
+class TestAnnotationResourcePaths:
+    @pytest.mark.asyncio
+    async def test_annotation_paths_use_forward_slashes_in_ipc_payload(self):
+        backend = FileIPCBackend()
+        backend._dispatch = AsyncMock(return_value=CommandResult(ok=True))
+
+        await backend.annotation_export_dimension_geometry(
+            lisp_path=r"D:\AI\autocad-mcp\lisp-code\auto_dimension_loader.lsp",
+            report_path=r"C:\temp\geometry.json",
+            dimension_layer="MCP-DIM",
+        )
+
+        backend._dispatch.assert_awaited_once_with(
+            "annotation-export-dimension-geometry",
+            {
+                "lisp_path": "D:/AI/autocad-mcp/lisp-code/auto_dimension_loader.lsp",
+                "report_path": "C:/temp/geometry.json",
+                "dimension_layer": "MCP-DIM",
+                "use_current_selection": "0",
+            },
+        )

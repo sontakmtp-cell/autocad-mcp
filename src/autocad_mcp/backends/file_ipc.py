@@ -116,6 +116,12 @@ def _lisp_string(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def _lisp_path(value: str) -> str:
+    """Use separators that survive the dispatcher's minimal JSON parser."""
+
+    return value.replace("\\", "/")
+
+
 class FileIPCBackend(AutoCADBackend):
     """File IPC with exact request routing through ActiveX/COM."""
 
@@ -611,15 +617,17 @@ class FileIPCBackend(AutoCADBackend):
     ) -> CommandResult:
         """Run the fixed, read-only annotation exporter through safe IPC."""
 
+        params = {
+            "lisp_path": _lisp_path(lisp_path),
+            "report_path": _lisp_path(report_path),
+            "dimension_layer": dimension_layer,
+            "use_current_selection": "1" if use_current_selection else "0",
+        }
+        if source_layers:
+            params["source_layers"] = source_layers
         return await self._dispatch(
             "annotation-export-dimension-geometry",
-            {
-                "lisp_path": lisp_path,
-                "report_path": report_path,
-                "dimension_layer": dimension_layer,
-                "source_layers": source_layers,
-                "use_current_selection": "1" if use_current_selection else "0",
-            },
+            params,
         )
 
     async def annotation_commit_dimension_plan(
@@ -644,9 +652,9 @@ class FileIPCBackend(AutoCADBackend):
         return await self._dispatch(
             "annotation-commit-dimension-plan",
             {
-                "lisp_path": lisp_path,
-                "plan_path": plan_path,
-                "report_path": report_path,
+                "lisp_path": _lisp_path(lisp_path),
+                "plan_path": _lisp_path(plan_path),
+                "report_path": _lisp_path(report_path),
                 "dimension_layer": dimension_layer,
                 "dimstyle": dimstyle,
                 "scale_factor": scale_factor,
@@ -674,9 +682,9 @@ class FileIPCBackend(AutoCADBackend):
         return await self._dispatch(
             "annotation-repair-dimensions",
             {
-                "lisp_path": lisp_path,
-                "actions_path": actions_path,
-                "report_path": report_path,
+                "lisp_path": _lisp_path(lisp_path),
+                "actions_path": _lisp_path(actions_path),
+                "report_path": _lisp_path(report_path),
                 "dimension_layer": dimension_layer,
                 "dimstyle": dimstyle,
             },

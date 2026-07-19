@@ -4,18 +4,33 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import socket
+import sys
 
 import httpx
 import pytest
 import pytest_asyncio
 import uvicorn
 from mcp import ClientSession
+from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import Implementation
 
 from autocad_mcp.config import TransportConfig
 from autocad_mcp.http_server import create_app
+
+
+ADVANCED_ANNOTATION_TOOLS = {
+    "annotation.detect_parts",
+    "annotation.plan_dimensions",
+    "annotation.commit_dimension_plan",
+    "annotation.auto_dimension",
+    "annotation.batch_create_dimensions",
+    "annotation.dimension_profiles",
+    "annotation.audit_dimensions",
+    "annotation.repair_dimension_layout",
+}
 
 
 def _free_port() -> int:
@@ -103,11 +118,61 @@ async def test_initialize_tools_list_and_call(http_endpoint):
         "system",
     }.issubset({tool.name for tool in tools_result.tools})
     tools_by_name = {tool.name: tool for tool in tools_result.tools}
+    assert ADVANCED_ANNOTATION_TOOLS.issubset(tools_by_name)
+    assert "auto_dimension" in tools_by_name["annotation"].description
+    assert "target_part_id" in tools_by_name["annotation"].description
     assert tools_by_name["system"].annotations.readOnlyHint is False
     assert tools_by_name["view"].annotations.readOnlyHint is False
     assert call_result.isError is False
     payload = json.loads(_text_content(call_result)[0])
     assert payload["ok"] is True
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_stdio_and_http_tools_list_have_the_same_manifest(http_endpoint):
+    async with _new_client(http_endpoint) as (read_stream, write_stream, _):
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            http_tools = {tool.name for tool in (await session.list_tools()).tools}
+
+    environment = dict(os.environ)
+    environment.update(
+        {
+            "AUTOCAD_MCP_BACKEND": "ezdxf",
+            "AUTOCAD_MCP_TRANSPORT": "stdio",
+            "AUTOCAD_MCP_REMOTE_PROFILE": "off",
+            "AUTOCAD_MCP_AUTH_MODE": "none",
+            "AUTOCAD_MCP_ALLOW_NO_AUTH": "0",
+        }
+    )
+    params = StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "autocad_mcp"],
+        env=environment,
+    )
+    async with stdio_client(params) as (read_stream, write_stream):
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            stdio_tools = {tool.name for tool in (await session.list_tools()).tools}
+
+    assert stdio_tools == http_tools
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_tool_manifest_operation_is_read_only_diagnostic(http_endpoint):
+    async with _new_client(http_endpoint) as (read_stream, write_stream, _):
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            result = await session.call_tool(
+                "system", {"operation": "tool_manifest"}
+            )
+
+    assert result.isError is False
+    payload = json.loads(_text_content(result)[0])
+    assert payload["ok"] is True
+    assert payload["feature_status"]["phase1_dimension_perf_installed"] is True
+    assert "annotation.auto_dimension" in payload["registered_tools"]
+    assert "auto_dimension" in payload["advanced_annotation_operations"]
 
 
 @pytest.mark.asyncio(loop_scope="module")

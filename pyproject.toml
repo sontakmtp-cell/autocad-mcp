@@ -28,6 +28,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/autocad_mcp"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"lisp-code" = "autocad_mcp/lisp-code"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"

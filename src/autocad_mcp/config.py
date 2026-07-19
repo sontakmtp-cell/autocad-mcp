@@ -12,8 +12,11 @@ import structlog
 
 log = structlog.get_logger()
 
-# Paths
-LISP_DIR = Path(__file__).resolve().parent.parent.parent / "lisp-code"
+# Paths. Wheels place AutoLISP resources beside this package; source checkouts
+# keep them at the repository root.
+_PACKAGE_LISP_DIR = Path(__file__).resolve().parent / "lisp-code"
+_REPOSITORY_LISP_DIR = Path(__file__).resolve().parent.parent.parent / "lisp-code"
+LISP_DIR = _PACKAGE_LISP_DIR if _PACKAGE_LISP_DIR.is_dir() else _REPOSITORY_LISP_DIR
 IPC_DIR = Path(os.environ.get("AUTOCAD_MCP_IPC_DIR", "C:/temp"))
 
 # Backend selection

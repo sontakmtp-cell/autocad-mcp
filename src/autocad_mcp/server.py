@@ -5,7 +5,11 @@ Tools: drawing, entity, layer, block, annotation, pid, view, system
 
 from __future__ import annotations
 
+import os
+import subprocess
 import structlog
+import sys
+from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from autocad_mcp.client import (
@@ -21,6 +25,18 @@ from autocad_mcp.config import load_transport_config
 # FastMCP validates return types via Pydantic. Tools that may return
 # ImageContent (screenshot) alongside TextContent need a union return type.
 ToolResult = str | list
+SERVER_VERSION = "3.1.0"
+
+ADVANCED_ANNOTATION_OPERATIONS = (
+    "detect_parts",
+    "plan_dimensions",
+    "commit_dimension_plan",
+    "auto_dimension",
+    "batch_create_dimensions",
+    "dimension_profiles",
+    "audit_dimensions",
+    "repair_dimension_layout",
+)
 
 log = structlog.get_logger()
 
@@ -43,6 +59,106 @@ mcp = FastMCP(
     auth=_oauth_runtime.auth_settings if _oauth_runtime else None,
     token_verifier=_oauth_runtime.verifier if _oauth_runtime else None,
 )
+
+_OPTIONAL_FEATURES_REGISTERED = False
+
+
+def register_optional_features() -> dict[str, bool]:
+    """Import and install the dimension feature modules for every entrypoint."""
+
+    global _OPTIONAL_FEATURES_REGISTERED
+    if _OPTIONAL_FEATURES_REGISTERED:
+        from autocad_mcp import auto_dimension_tool
+        from autocad_mcp import phase1_dimension_perf
+        from autocad_mcp import phase2_dimension_activex
+        from autocad_mcp import phase3_dimension_scope
+
+        return {
+            "auto_dimension_tool_imported": auto_dimension_tool is not None,
+            "phase1_dimension_perf_installed": phase1_dimension_perf._INSTALLED,
+            "phase2_dimension_activex_installed": phase2_dimension_activex._INSTALLED,
+            "phase3_dimension_scope_installed": phase3_dimension_scope._INSTALLED,
+        }
+
+    from autocad_mcp import auto_dimension_tool
+    from autocad_mcp import phase1_dimension_perf
+    from autocad_mcp import phase2_dimension_activex
+    from autocad_mcp import phase3_dimension_scope
+
+    phase1_dimension_perf.install()
+    phase2_dimension_activex.install()
+    phase3_dimension_scope.install()
+    _OPTIONAL_FEATURES_REGISTERED = True
+    return {
+        "auto_dimension_tool_imported": auto_dimension_tool is not None,
+        "phase1_dimension_perf_installed": phase1_dimension_perf._INSTALLED,
+        "phase2_dimension_activex_installed": phase2_dimension_activex._INSTALLED,
+        "phase3_dimension_scope_installed": phase3_dimension_scope._INSTALLED,
+    }
+
+
+def _runtime_entrypoint() -> str:
+    configured = os.environ.get("AUTOCAD_MCP_ENTRYPOINT", "").strip()
+    if configured:
+        return configured
+    name = Path(sys.argv[0]).name.lower()
+    if name == "__main__.py":
+        return "python -m autocad_mcp"
+    if name == "http_server.py":
+        return "python -m autocad_mcp.http_server"
+    return name or "import autocad_mcp.server"
+
+
+def _git_commit() -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parents[2],
+            capture_output=True,
+            text=True,
+            timeout=1,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    commit = result.stdout.strip()
+    return commit or None
+
+
+def _tool_manifest() -> dict[str, object]:
+    feature_status = register_optional_features()
+    tools = getattr(getattr(mcp, "_tool_manager", None), "_tools", {})
+    registered_tools = sorted(tools) if isinstance(tools, dict) else []
+    from autocad_mcp import client
+    from autocad_mcp.config import detect_backend, load_transport_config
+
+    active_backend = getattr(client._backend, "name", None)
+    if active_backend is None:
+        try:
+            active_backend = detect_backend()
+        except Exception:
+            active_backend = os.environ.get("AUTOCAD_MCP_BACKEND", "auto")
+    config = load_transport_config()
+    return {
+        "ok": True,
+        "server_version": SERVER_VERSION,
+        "git_commit": _git_commit(),
+        "entrypoint": _runtime_entrypoint(),
+        "transport": config.transport,
+        "backend": active_backend,
+        "registered_tools": registered_tools,
+        "annotation_operations": [
+            "create_text",
+            "create_dimension_linear",
+            "create_dimension_aligned",
+            "create_dimension_angular",
+            "create_dimension_radius",
+            "create_leader",
+            *ADVANCED_ANNOTATION_OPERATIONS,
+        ],
+        "advanced_annotation_operations": list(ADVANCED_ANNOTATION_OPERATIONS),
+        "feature_status": feature_status,
+    }
 
 
 # ==========================================================================
@@ -312,7 +428,7 @@ async def annotation(
     data: dict | None = None,
     include_screenshot: bool = False,
 ) -> ToolResult:
-    """Annotation: text, dimensions, and leaders.
+    """Annotation: text, dimensions, leaders, and automatic dimension workflows.
 
     Operations:
       create_text             — data: {x, y, text, height?, rotation?, layer?}
@@ -321,8 +437,46 @@ async def annotation(
       create_dimension_angular — data: {cx, cy, x1, y1, x2, y2}
       create_dimension_radius — data: {cx, cy, radius, angle}
       create_leader           — data: {points: [[x,y],...], text}
+      detect_parts            — read-only geometry clustering; data: {source_layers?,
+                                gap_tolerance?, include_screenshot?}
+      plan_dimensions         — preview a plan without editing; data: {target_part_id?,
+                                entity_ids?, region?, region_mode?, selection?,
+                                use_current_selection?, source_layers?, profile?,
+                                dimension_layer?, include_overall?, include_features?,
+                                include_holes?, include_arcs?, include_centers?,
+                                clear_existing?}
+      commit_dimension_plan   — commit an approved plan; data: {plan_id,
+                                expected_revision, ...}
+      auto_dimension          — detect, plan, and commit in one request. It accepts
+                                target_part_id, entity_ids, region, region_mode,
+                                selection='current' or use_current_selection,
+                                source_layers, dimension_layer, profile,
+                                include_overall, include_features, include_holes,
+                                include_arcs, include_centers, clear_existing,
+                                include_screenshot.
+      batch_create_dimensions — commit data.dimensions in one request, one Undo
+                                group, and one final Regen where the backend supports it.
+      dimension_profiles      — data: {action: list|get|save|delete, ...}
+      audit_dimensions        — read-only dimension quality audit; data: {profile?,
+                                dimension_layer?, include_screenshot?}
+      repair_dimension_layout — apply a fresh audit's safe repairs; data: {audit_id,
+                                issue_ids?, spacing?}
+
+    Automatic-dimension selectors are mutually exclusive: target_part_id, entity_ids,
+    region, or selection='current'. Dimension results include created_count,
+    dimension_types, selection_scope, scan counters, commit_engine, regen_count, and
+    timings_ms when the backend can provide those values.
     """
     data = data or {}
+    if operation in ADVANCED_ANNOTATION_OPERATIONS:
+        register_optional_features()
+        from autocad_mcp.auto_dimension_tool import _run_annotation
+
+        return await _run_annotation(
+            operation=operation,
+            data=data,
+            include_image=include_screenshot,
+        )
     backend = await get_backend()
 
     if operation == "create_text":
@@ -485,8 +639,10 @@ async def system(
       health        — Quick health check (ping backend).
       get_backend   — Return current backend name and capabilities.
       runtime       — Return process/runtime details for spawn diagnostics.
+      tool_manifest — Read-only registration, entrypoint, phase, and backend diagnostics.
       init          — Re-initialize the backend.
-      execute_lisp  — Execute arbitrary AutoLISP code (File IPC only). data: {code}
+      execute_lisp  — Execute AutoLISP code (File IPC only). data: {code}; permanently
+                      denied in remote production profiles.
     """
     data = data or {}
 
@@ -530,6 +686,8 @@ async def system(
                 "wsl_interop": bool(os.environ.get("WSL_INTEROP")),
             }
         )
+    elif operation == "tool_manifest":
+        return _json(_tool_manifest())
     elif operation == "init":
         # Force re-initialization
         from autocad_mcp import client
@@ -574,10 +732,12 @@ def main():
         ],
     )
 
+    register_optional_features()
+
     transport_config = load_transport_config()
     log.info(
         "autocad_mcp_starting",
-        version="3.1.0",
+        version=SERVER_VERSION,
         transport=transport_config.transport,
     )
 

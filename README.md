@@ -163,7 +163,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-phase4-oauth.ps1 `
 - Endpoint MCP: `https://cad.example.com/mcp`
 - Metadata: `https://cad.example.com/.well-known/oauth-protected-resource`
 - Scopes: `autocad.read`, `autocad.write`
-- `execute_lisp` **luôn bị chặn** trên mọi remote profile
+- `execute_lisp` **mặc định bị chặn** trên mọi remote profile; chỉ bật khi set
+  `AUTOCAD_MCP_ALLOW_EXECUTE_LISP=1` (rủi ro cao — AutoLISP tùy ý trên máy host)
 
 #### Kết nối ChatGPT (Windows — khuyến nghị)
 
@@ -332,7 +333,7 @@ C:\PIDv4-CTO\
 | `runtime` | Platform, Python path, backend env |
 | `tool_manifest` | Tools đã đăng ký, annotation ops, feature status |
 | `init` | Re-init backend |
-| `execute_lisp` | Chạy AutoLISP tùy ý — **chỉ File IPC / stdio local**; remote luôn deny |
+| `execute_lisp` | Chạy AutoLISP tùy ý — File IPC; remote cần `AUTOCAD_MCP_ALLOW_EXECUTE_LISP=1` |
 
 Ví dụ `execute_lisp`:
 
@@ -408,6 +409,7 @@ Nếu đổi `AUTOCAD_MCP_IPC_DIR`, cập nhật tương ứng biến `*mcp-ipc-
 | `AUTOCAD_MCP_REMOTE_PROFILE` | `off` | `off` \| `dev` \| `production` |
 | `AUTOCAD_MCP_AUTH_MODE` | `none` | `none` \| `oauth` |
 | `AUTOCAD_MCP_ALLOW_NO_AUTH` | `false` | Bật No Auth (chỉ với profile `dev`) |
+| `AUTOCAD_MCP_ALLOW_EXECUTE_LISP` | `false` | Cho phép `system.execute_lisp` qua remote (opt-in; rủi ro cao) |
 | `AUTOCAD_MCP_ALLOWED_HOSTS` | — | Host allowlist (`;`-separated) |
 | `AUTOCAD_MCP_ALLOWED_DIRS` | — | Thư mục file cho open/save remote (`;`-separated) |
 | `AUTOCAD_MCP_PUBLIC_BASE_URL` | — | Resource URL HTTPS công khai (OAuth) |

@@ -4,7 +4,9 @@ param(
     [string]$McpPath = "/mcp",
     [ValidateSet("auto", "file_ipc", "ezdxf")]
     [string]$Backend = "auto",
-    [string]$CloudflaredPath = ""
+    [string]$CloudflaredPath = "",
+    # High risk: lets remote clients (e.g. ChatGPT) run arbitrary AutoLISP.
+    [switch]$AllowExecuteLisp
 )
 
 $ErrorActionPreference = "Stop"
@@ -199,11 +201,16 @@ https://developers.cloudflare.com/tunnel/downloads/
         AUTOCAD_MCP_REMOTE_PROFILE = "dev"
         AUTOCAD_MCP_AUTH_MODE = "none"
         AUTOCAD_MCP_ALLOW_NO_AUTH = "1"
+        AUTOCAD_MCP_ALLOW_EXECUTE_LISP = $(if ($AllowExecuteLisp) { "1" } else { "0" })
         AUTOCAD_MCP_ALLOWED_DIRS = ""
         AUTOCAD_MCP_ALLOWED_HOSTS = ""
         AUTOCAD_MCP_PUBLIC_BASE_URL = ""
         AUTOCAD_MCP_MAX_IMAGE_BYTES = "5242880"
         AUTOCAD_MCP_ONLY_TEXT = "0"
+    }
+
+    if ($AllowExecuteLisp) {
+        Write-Host "WARNING: AUTOCAD_MCP_ALLOW_EXECUTE_LISP=1 — remote clients can run arbitrary AutoLISP." -ForegroundColor Yellow
     }
 
     $serverStdout = Join-Path $LogRoot "server-initial.stdout.log"

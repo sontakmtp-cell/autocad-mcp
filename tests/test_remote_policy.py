@@ -88,7 +88,7 @@ def test_no_auth_safe_allowlist_denies_writes_and_unlisted_operations(
     assert decision.code == expected_code
 
 
-def test_execute_lisp_is_denied_in_any_remote_profile():
+def test_execute_lisp_is_denied_in_any_remote_profile_by_default():
     decision = evaluate_operation(
         tool="system",
         operation="execute_lisp",
@@ -104,6 +104,58 @@ def test_execute_lisp_is_denied_in_any_remote_profile():
 
     assert decision.allowed is False
     assert decision.code == "execute_lisp_denied"
+
+
+def test_execute_lisp_allowed_when_remote_opt_in_and_no_auth():
+    decision = evaluate_operation(
+        tool="system",
+        operation="execute_lisp",
+        data={"code": "(+ 1 2)"},
+        config=_dev_config(allow_execute_lisp=True),
+    )
+
+    assert decision == PolicyDecision.allow()
+
+
+def test_execute_lisp_allowed_when_remote_opt_in_and_oauth_write():
+    decision = evaluate_operation(
+        tool="system",
+        operation="execute_lisp",
+        data={"code": "(+ 1 2)"},
+        scopes=("autocad.read", "autocad.write"),
+        config=_dev_config(
+            remote_profile="production",
+            auth_mode="oauth",
+            allow_execute_lisp=True,
+            oauth_issuer="https://issuer.example",
+            oauth_audience="https://example.com",
+            public_base_url="https://example.com",
+            allowed_hosts=("example.com",),
+        ),
+    )
+
+    assert decision == PolicyDecision.allow()
+
+
+def test_execute_lisp_opt_in_still_requires_oauth_write_scope():
+    decision = evaluate_operation(
+        tool="system",
+        operation="execute_lisp",
+        data={"code": "(+ 1 2)"},
+        scopes=("autocad.read",),
+        config=_dev_config(
+            remote_profile="production",
+            auth_mode="oauth",
+            allow_execute_lisp=True,
+            oauth_issuer="https://issuer.example",
+            oauth_audience="https://example.com",
+            public_base_url="https://example.com",
+            allowed_hosts=("example.com",),
+        ),
+    )
+
+    assert decision.allowed is False
+    assert decision.code == "scope_missing"
 
 
 def test_stdio_profile_is_not_restricted_by_remote_allowlist():

@@ -61,6 +61,10 @@ class TransportConfig:
     remote_profile: str = REMOTE_PROFILE_DEFAULT
     auth_mode: str = AUTH_MODE_DEFAULT
     allow_no_auth: bool = False
+    # Explicit opt-in: remote profiles deny freeform AutoLISP unless this is True.
+    # Arbitrary LISP can erase geometry, write files, and hang AutoCAD — never enable
+    # on an untrusted network without understanding the risk.
+    allow_execute_lisp: bool = False
     allowed_dirs: tuple[str, ...] = ()
     allowed_hosts: tuple[str, ...] = ()
     public_base_url: str | None = None
@@ -176,6 +180,7 @@ def load_transport_config() -> TransportConfig:
         .strip()
         .lower(),
         allow_no_auth=_env_bool("AUTOCAD_MCP_ALLOW_NO_AUTH", False),
+        allow_execute_lisp=_env_bool("AUTOCAD_MCP_ALLOW_EXECUTE_LISP", False),
         allowed_dirs=_split_env_list("AUTOCAD_MCP_ALLOWED_DIRS"),
         allowed_hosts=tuple(
             host.lower().rstrip(".")

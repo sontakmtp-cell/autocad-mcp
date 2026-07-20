@@ -62,10 +62,13 @@ async def get_backend() -> AutoCADBackend:
         if backend_name == "file_ipc":
             from autocad_mcp.backends.safe_file_ipc import SafeFileIPCBackend
 
+            is_remote = (
+                transport_config.transport == "streamable-http"
+                and transport_config.remote_profile != "off"
+            )
             backend = SafeFileIPCBackend(
-                allow_execute_lisp=not (
-                    transport_config.transport == "streamable-http"
-                    and transport_config.remote_profile != "off"
+                allow_execute_lisp=(
+                    not is_remote or transport_config.allow_execute_lisp
                 )
             )
         else:

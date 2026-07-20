@@ -641,8 +641,9 @@ async def system(
       runtime       — Return process/runtime details for spawn diagnostics.
       tool_manifest — Read-only registration, entrypoint, phase, and backend diagnostics.
       init          — Re-initialize the backend.
-      execute_lisp  — Execute AutoLISP code (File IPC only). data: {code}; permanently
-                      denied in remote production profiles.
+      execute_lisp  — Execute AutoLISP code (File IPC only). data: {code}.
+                      Remote profiles deny this unless AUTOCAD_MCP_ALLOW_EXECUTE_LISP=1
+                      (and OAuth write scope when auth_mode=oauth).
     """
     data = data or {}
 

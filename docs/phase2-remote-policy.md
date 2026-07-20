@@ -35,8 +35,20 @@ Chỉ các operation sau được phép:
 - `block`: `list`
 - `view`: `get_screenshot`
 
-`execute_lisp` luôn bị chặn trong mọi remote profile. Các thao tác tạo, sửa,
-xóa, mở/lưu file và zoom không được bật trong Phase 2 No Authentication.
+`execute_lisp` mặc định bị chặn trong mọi remote profile. Để bật có chủ đích
+(demo cá nhân / máy tin cậy):
+
+```powershell
+$env:AUTOCAD_MCP_ALLOW_EXECUTE_LISP="1"
+```
+
+Cờ này cũng thêm `execute_lisp` vào allowlist No Authentication (dev). OAuth
+production vẫn cần scope `autocad.write`. Arbitrary AutoLISP có thể xóa hình,
+ghi file và treo AutoCAD — chỉ bật khi bạn chấp nhận rủi ro đó.
+
+Các thao tác tạo, sửa, xóa, mở/lưu file và zoom vẫn không nằm trong Phase 2
+No Authentication safe allowlist (trừ khi dùng OAuth write hoặc `execute_lisp`
+đã opt-in).
 
 ## Path guard
 

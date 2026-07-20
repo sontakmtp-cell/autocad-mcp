@@ -54,6 +54,38 @@ async def test_execute_lisp_positional_call_is_denied_before_handler(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_execute_lisp_allowed_when_remote_opt_in(monkeypatch):
+    called = False
+
+    def _opt_in_config() -> TransportConfig:
+        return TransportConfig(
+            transport="streamable-http",
+            host="127.0.0.1",
+            port=8765,
+            path="/mcp",
+            remote_profile="dev",
+            allow_no_auth=True,
+            allow_execute_lisp=True,
+        )
+
+    monkeypatch.setattr(client, "_current_transport_config", _opt_in_config)
+    monkeypatch.setattr(client, "get_access_token", lambda: None)
+    monkeypatch.setattr(client, "_backend", None)
+
+    @client._safe("system")
+    async def handler(operation: str, data: dict | None = None):
+        nonlocal called
+        called = True
+        return json.dumps({"ok": True, "value": 3})
+
+    result = await handler("execute_lisp", {"code": "(+ 1 2)"})
+    payload = json.loads(result)
+
+    assert called is True
+    assert payload["ok"] is True
+
+
+@pytest.mark.asyncio
 async def test_remote_execute_lisp_creates_no_ipc_or_lisp_file(tmp_path, monkeypatch):
     backend = SafeFileIPCBackend(allow_execute_lisp=False)
     backend._ipc_dir = tmp_path

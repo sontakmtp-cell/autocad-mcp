@@ -10,7 +10,10 @@ param(
     [int]$Port = 8765,
     [string]$McpPath = "/mcp",
     [ValidateSet("auto", "file_ipc", "ezdxf")]
-    [string]$Backend = "auto"
+    [string]$Backend = "auto",
+    # High risk: lets authenticated remote clients (e.g. ChatGPT) run arbitrary AutoLISP.
+    # Requires File IPC + OAuth write scope. Off by default.
+    [switch]$AllowExecuteLisp
 )
 
 $ErrorActionPreference = "Stop"
@@ -51,6 +54,7 @@ $environment = @{
     AUTOCAD_MCP_REMOTE_PROFILE = "production"
     AUTOCAD_MCP_AUTH_MODE = "oauth"
     AUTOCAD_MCP_ALLOW_NO_AUTH = "0"
+    AUTOCAD_MCP_ALLOW_EXECUTE_LISP = $(if ($AllowExecuteLisp) { "1" } else { "0" })
     AUTOCAD_MCP_ALLOWED_HOSTS = $resourceUri.Host
     AUTOCAD_MCP_PUBLIC_BASE_URL = $resourceUri.GetLeftPart([UriPartial]::Authority)
     AUTOCAD_MCP_OAUTH_ISSUER = $OAuthIssuer.TrimEnd("/")
@@ -74,6 +78,13 @@ try {
     Write-Host "Issuer: $($environment.AUTOCAD_MCP_OAUTH_ISSUER)" -ForegroundColor DarkGray
     Write-Host "Scopes: $($environment.AUTOCAD_MCP_OAUTH_SCOPES)" -ForegroundColor DarkGray
     Write-Host "No Authentication is disabled. Press Ctrl+C to stop." -ForegroundColor Yellow
+    if ($AllowExecuteLisp) {
+        Write-Host "WARNING: execute_lisp ENABLED for remote OAuth clients (ALLOW_EXECUTE_LISP=1)." -ForegroundColor Yellow
+        Write-Host "Needs File IPC (AutoCAD running) + OAuth scope autocad.write." -ForegroundColor Yellow
+    }
+    else {
+        Write-Host "execute_lisp is disabled remotely (default). Pass -AllowExecuteLisp to enable." -ForegroundColor DarkGray
+    }
     & $pythonPath -m autocad_mcp
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE

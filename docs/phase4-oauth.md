@@ -13,7 +13,9 @@ luồng OAuth. Xem [hướng dẫn Authentication của Apps SDK](https://develo
 
 - `autocad.read`: đọc health, thông tin drawing, entity, layer, block, PID và screenshot.
 - `autocad.write`: các operation vẽ/sửa/lưu/mở/zoom thông thường khi token đồng thời có `autocad.read`.
-- `execute_lisp` luôn bị chặn, kể cả token có `autocad.write`.
+- `execute_lisp` mặc định bị chặn remote; chỉ bật khi set `AUTOCAD_MCP_ALLOW_EXECUTE_LISP=1`
+  (script: `-AllowExecuteLisp`, wrapper: `start_mcp_chatgpt.bat`) **và** token có
+  `autocad.write`. Cần backend File IPC (AutoCAD đang chạy).
 
 ## Cấu hình provider
 
@@ -69,6 +71,13 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-phase4-oauth.ps1 `
   -OAuthAudience "https://cad.example.com"
 ```
 
+Luồng thường dùng trên máy Windows: `start_mcp_chatgpt.bat` (OAuth MCP) +
+`start_cloudflare_tunnel.bat` (named tunnel). Wrapper hiện bật `-AllowExecuteLisp`
+để ChatGPT có thể gọi freeform AutoLISP khi đã OAuth + File IPC.
+
+Để tắt lại freeform LISP, bỏ `-AllowExecuteLisp` trong `start_mcp_chatgpt.bat`
+hoặc gọi script không có switch đó.
+
 Server sẽ phục vụ:
 
 ```text
@@ -94,6 +103,7 @@ scope.
 | `AUTOCAD_MCP_OAUTH_ISSUER` | Issuer OIDC chính xác |
 | `AUTOCAD_MCP_OAUTH_AUDIENCE` | Giá trị `aud` của access token |
 | `AUTOCAD_MCP_OAUTH_SCOPES` | Mặc định `autocad.read autocad.write` |
+| `AUTOCAD_MCP_ALLOW_EXECUTE_LISP` | `0` mặc định; `1` cho phép remote `execute_lisp` (rủi ro cao) |
 
 ## Checklist nghiệm thu
 

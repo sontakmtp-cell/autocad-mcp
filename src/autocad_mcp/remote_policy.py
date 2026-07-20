@@ -81,10 +81,13 @@ def evaluate_operation(
         return PolicyDecision.allow()
 
     if normalized_tool == "system" and normalized_operation == "execute_lisp":
-        return PolicyDecision.deny(
-            "execute_lisp_denied",
-            "execute_lisp is permanently disabled for every remote profile.",
-        )
+        if not config.allow_execute_lisp:
+            return PolicyDecision.deny(
+                "execute_lisp_denied",
+                "execute_lisp is disabled for remote profiles. "
+                "Set AUTOCAD_MCP_ALLOW_EXECUTE_LISP=1 only if you accept arbitrary "
+                "AutoLISP running on this machine (high risk).",
+            )
 
     if config.auth_mode == "oauth":
         granted_scopes = set(scopes or ())
@@ -114,7 +117,10 @@ def evaluate_operation(
                 "AUTOCAD_MCP_ALLOW_NO_AUTH=1.",
             )
 
-        allowed_operations = SAFE_NO_AUTH_OPERATIONS.get(normalized_tool, frozenset())
+        allowed_operations = set(SAFE_NO_AUTH_OPERATIONS.get(normalized_tool, frozenset()))
+        # Freeform LISP is never in the default safe list; opt-in only.
+        if config.allow_execute_lisp and normalized_tool == "system":
+            allowed_operations.add("execute_lisp")
         if normalized_operation not in allowed_operations:
             return PolicyDecision.deny(
                 "operation_not_allowlisted",

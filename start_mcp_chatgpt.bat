@@ -31,6 +31,7 @@ if errorlevel 1 (
 
 echo Dang khoi dong AutoCAD MCP Phase 4 cho ChatGPT...
 echo URL MCP: https://cad.kythuatvang.com/mcp
+echo execute_lisp: BAT (AllowExecuteLisp ON). Can AutoCAD dang mo + OAuth write.
 echo Giu cua so nay mo trong luc su dung. Nhan Ctrl+C de dung.
 echo.
 
@@ -39,7 +40,8 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass ^
     -PublicBaseUrl "https://cad.kythuatvang.com" ^
     -OAuthIssuer "https://dev-fmth5j5hp2e5sk3s.us.auth0.com/" ^
     -OAuthAudience "https://cad.kythuatvang.com/" ^
-    -Backend auto
+    -Backend auto ^
+    -AllowExecuteLisp
 
 if errorlevel 1 (
     echo.
